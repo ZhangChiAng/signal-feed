@@ -1,0 +1,34 @@
+[source]
+name = "OpenAI News"
+url = "https://openai.com/news/rss.xml"
+window_size = 20
+
+[network]
+timeout_seconds = 15
+max_response_bytes = 5242880
+user_agent = "SignalFeed/0.1 (+https://openai.com/news/rss.xml)"
+
+[filter]
+fields = ["title", "content"]
+keywords = [
+  "OpenAI",
+  "GPT",
+  "LLM",
+  "AI",
+  "API",
+  "SDK",
+  "Codex",
+  "agent",
+  "agents",
+  "IDE",
+  "model",
+  "reasoning",
+  "multimodal",
+  "ChatGPT",
+  "agentic",
+]
+
+[feishu]
+title = "SignalFeed · OpenAI 动态"
+max_payload_bytes = 18432
+summary_max_chars = 360
