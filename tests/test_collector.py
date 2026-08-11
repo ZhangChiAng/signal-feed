@@ -1,12 +1,15 @@
-from io import StringIO
 import logging
 import unittest
+from io import StringIO
 
-from signalfeed.collector import CollectionError, RSSCollector, clean_html, normalize_date
+from signalfeed.collector import (
+    CollectionError,
+    RSSCollector,
+    clean_html,
+    normalize_date,
+)
 from signalfeed.config import NetworkConfig, SourceConfig
-
 from tests.helpers import FakeResponse
-
 
 RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
 <rss xmlns:content="http://purl.org/rss/1.0/modules/content/"
@@ -64,7 +67,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(first.item_id, "stable-one")
         self.assertEqual(first.title, "GPT & agents")
         self.assertEqual(first.content, "Hello world.")
-        self.assertEqual(first.published_at, "2026-08-10T04:30:00Z")
+        self.assertEqual(first.published_at, "2026-08-10T12:30:00+08:00")
         self.assertEqual(first.author, "Example Author")
         self.assertEqual(first.category, "Research, AI")
         self.assertEqual(second.item_id, "https://example.com/two")
@@ -87,7 +90,9 @@ class CollectorTests(unittest.TestCase):
     def test_rejects_oversized_and_invalid_xml_responses(self) -> None:
         tiny = NetworkConfig(15.0, 4, "test")
         with self.assertRaisesRegex(CollectionError, "exceeds"):
-            RSSCollector(self.source, tiny, lambda request, timeout: FakeResponse(b"12345")).collect()
+            RSSCollector(
+                self.source, tiny, lambda request, timeout: FakeResponse(b"12345")
+            ).collect()
         with self.assertRaisesRegex(CollectionError, "invalid RSS XML"):
             RSSCollector(
                 self.source,
@@ -97,7 +102,14 @@ class CollectorTests(unittest.TestCase):
 
     def test_clean_html_and_naive_date(self) -> None:
         self.assertEqual(clean_html("<p>A&nbsp; B</p><style>hidden</style> C"), "A B C")
-        self.assertEqual(normalize_date("10 Aug 2026 04:00:00"), "2026-08-10T04:00:00Z")
+        self.assertEqual(
+            normalize_date("10 Aug 2026 04:00:00"),
+            "2026-08-10T12:00:00+08:00",
+        )
+        self.assertEqual(
+            normalize_date("10 Aug 2026 04:00:00 -0700"),
+            "2026-08-10T19:00:00+08:00",
+        )
 
 
 if __name__ == "__main__":

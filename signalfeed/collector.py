@@ -1,18 +1,17 @@
 """RSS collection using only the Python standard library."""
 
-from collections.abc import Callable
-from datetime import UTC
-from email.utils import parsedate_to_datetime
-from html.parser import HTMLParser
 import logging
 import re
+import xml.etree.ElementTree as ET
+from collections.abc import Callable
+from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from urllib.parse import urldefrag
 from urllib.request import Request, urlopen
-import xml.etree.ElementTree as ET
 
 from .config import NetworkConfig, SourceConfig
+from .datetime_utils import beijing_isoformat
 from .model import NewsItem
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -58,9 +57,7 @@ def normalize_date(value: str) -> str:
         raise ValueError(f"invalid publication date: {value!r}") from exc
     if parsed is None:
         raise ValueError(f"invalid publication date: {value!r}")
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return beijing_isoformat(parsed)
 
 
 class RSSCollector:
@@ -79,14 +76,21 @@ class RSSCollector:
     def collect(self) -> list[NewsItem]:
         request = Request(
             self.source.url,
-            headers={"User-Agent": self.network.user_agent, "Accept": "application/rss+xml, application/xml;q=0.9"},
+            headers={
+                "User-Agent": self.network.user_agent,
+                "Accept": "application/rss+xml, application/xml;q=0.9",
+            },
             method="GET",
         )
         try:
-            with self._opener(request, timeout=self.network.timeout_seconds) as response:
+            with self._opener(
+                request, timeout=self.network.timeout_seconds
+            ) as response:
                 payload = response.read(self.network.max_response_bytes + 1)
         except Exception as exc:
-            raise CollectionError(f"failed to fetch RSS feed: {exc}") from exc
+            raise CollectionError(
+                f"failed to fetch RSS feed: {type(exc).__name__}"
+            ) from exc
 
         if len(payload) > self.network.max_response_bytes:
             raise CollectionError(
@@ -97,7 +101,9 @@ class RSSCollector:
         except ET.ParseError as exc:
             raise CollectionError(f"invalid RSS XML: {exc}") from exc
 
-        entries = [element for element in root.iter() if _local_name(element.tag) == "item"]
+        entries = [
+            element for element in root.iter() if _local_name(element.tag) == "item"
+        ]
         items: list[NewsItem] = []
         for index, element in enumerate(entries[: self.source.window_size], start=1):
             try:
