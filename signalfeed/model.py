@@ -1,6 +1,6 @@
 """Domain models shared across SignalFeed components."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,3 +20,13 @@ class NewsItem:
     author: str
     category: str
     guid: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChineseSummary:
+    title_zh: str
+    bullets_zh: tuple[str, ...]
+
+    def apply_to(self, item: NewsItem) -> NewsItem:
+        content = "\n".join(f"• {bullet}" for bullet in self.bullets_zh)
+        return replace(item, title=self.title_zh, content=content)

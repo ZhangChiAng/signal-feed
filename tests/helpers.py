@@ -22,7 +22,7 @@ def news_item(**overrides: str) -> NewsItem:
         "title": "A GPT release",
         "content": "A useful API update.",
         "url": "https://example.com/news/1",
-        "published_at": "2026-08-10T04:00:00Z",
+        "published_at": "2026-08-10T12:00:00+08:00",
         "author": "OpenAI",
         "category": "Product",
         "guid": "guid-1",

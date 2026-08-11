@@ -29,6 +29,4 @@ keywords = [
 ]
 
 [feishu]
-title = "SignalFeed · OpenAI 动态"
 max_payload_bytes = 18432
-summary_max_chars = 360
