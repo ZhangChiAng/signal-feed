@@ -6,6 +6,7 @@ SignalFeed 从 OpenAI 官方 RSS 的最新 20 条内容中筛选关键词，通�
 
 - [产品愿景与路线图](docs/product-vision.md)
 - [单一官方信源闭环技术规格](docs/single-source-specification.md)
+- [从零部署与运行验收](docs/deploy-from-scratch.md)
 
 ## 准备
 
@@ -16,19 +17,18 @@ uv python install 3.14
 uv sync --locked
 ```
 
-复制模型配置示例，并填写一个真实的 Responses 兼容模型和 HTTPS API 端点：
+以仅当前用户可读写的权限创建模型配置，并填写一个真实的 Responses 兼容模型和 HTTPS API 端点：
 
 ```bash
-cp models.example.toml models.toml
+install -m 0600 models.example.toml models.toml
 ```
 
 `models.toml` 必须且只能包含一个模型，以及 `model`、`protocol`、`base_url`、`api_key_env` 四个字段。`protocol` 固定为 `openai_responses`，`api_key_env` 固定为 `SIGNALFEED_LLM_API_KEY`。本地 `models.toml` 已被 Git 忽略。
 
-复制环境变量示例，在项目根目录创建权限为 `0600` 的 `.env`，再替换其中的占位值。进程中已存在的同名环境变量优先，文件不会覆盖它们：
+在项目根目录创建权限为 `0600` 的 `.env`，再替换其中的占位值。进程中已存在的同名环境变量优先，文件不会覆盖它们：
 
 ```bash
-cp .env.example .env
-chmod 600 .env
+install -m 0600 .env.example .env
 ```
 
 `SIGNALFEED_LLM_API_KEY` 为模型密钥。`--send` 还需要以下四项飞书企业自建应用配置：
@@ -82,6 +82,28 @@ uv run --locked python -m signalfeed --send
 No new matching items.
 ```
 
+## 自动运行与部署
+
+生产环境继续使用上述一次性 CLI，由 `signalfeed.timer` 在北京时间每天运行，包括周末和节假日：
+
+| 时间 | 用途 |
+| --- | --- |
+| `09:00` | A 股与港股上午连续交易开始前半小时 |
+| `12:30` | A 股与港股下午连续交易开始前半小时 |
+| `21:00` | 晚间简报 |
+
+交易时段参考[上交所交易规则](https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml)与[港交所交易时间说明](https://www.hkex.com.hk/Global/Exchange/FAQ/Securities-Market/Trading?sc_lang=en)。timer 使用 `Asia/Shanghai` 时区和 `Persistent=true`，服务器停机错过计划后会在恢复时补跑一次。
+
+PR 与 `main` push 都会运行 CI；只有本仓库 `main` 的成功 push CI 会部署对应 commit。仓库需要四个 Actions Secrets：`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`、`DEPLOY_PATH`。部署会在共享锁内确认该 commit 仍是远端 `main` 最新版本，再更新代码和锁定依赖；过时 workflow 会被跳过。部署完成后只重启并检查 timer，不会立即发送简报。
+
+service 和 CD 共用 `data/signalfeed.lock`，避免任务重叠或在运行中更新代码。service 最多等待锁 30 分钟，实际运行也限制为 30 分钟。日志通过以下命令查看：
+
+```bash
+journalctl -u signalfeed.service
+```
+
+仓库中的 `deploy/systemd/` 是管理员安装模板。日常 CD 不会覆盖 `/etc/systemd/system`；只有首次初始化或明确更新部署配置时才应按[从零部署说明](docs/deploy-from-scratch.md)重新渲染并安装单元文件。首版没有主动失败告警，启用后需人工完成 7 天、21 个计划时点的观察。
+
 ## 测试
 
 ```bash
@@ -93,8 +115,9 @@ uv run --locked python -m compileall -q signalfeed tests
 
 ## 当前非目标
 
-- 只支持 OpenAI RSS、最新 20 条、单进程运行和手动 CLI；模型请求并发上限固定为 500；
+- 只支持 OpenAI RSS、最新 20 条和单进程一次性 CLI；生产调度依赖 systemd，模型请求并发上限固定为 500；
 - Jina Reader 是当前允许的第三方正文提取服务；
-- 每次运行只向一个配置目标发送，不接收飞书事件，也不支持重叠运行；
+- 每次运行只向一个配置目标发送，不接收飞书事件；部署与定时运行通过文件锁串行化；
 - 不增加额外发送重试或 OpenAPI `uuid` 去重；
+- 不提供主动失败告警，当前依赖 systemd 状态和 journald 人工巡检；
 - 飞书成功与本地 SQLite 提交无法形成跨系统原子事务，极端情况下可能重复发送一次。

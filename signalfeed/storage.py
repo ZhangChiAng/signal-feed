@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from collections.abc import Iterable
+from contextlib import closing
 from pathlib import Path
 
 from .config import ModelConfig
@@ -46,7 +47,7 @@ class SQLiteStorage:
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute(DELIVERED_SCHEMA)
             connection.execute(CACHE_SCHEMA)
 
@@ -96,7 +97,7 @@ class SQLiteStorage:
         if not delivered:
             return
         self.initialize()
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.executemany(
                 "INSERT INTO delivered_items (source, item_id, url) VALUES (?, ?, ?)",
                 ((item.source, item.item_id, item.url) for item in delivered),
@@ -153,7 +154,7 @@ class SQLiteStorage:
         summary: ChineseSummary,
     ) -> None:
         self.initialize()
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection, connection:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO chinese_summary_cache (
