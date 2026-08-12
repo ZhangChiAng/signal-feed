@@ -1,10 +1,13 @@
-"""Feishu custom-bot rich-text notification support."""
+"""Feishu application-bot rich-text notification support."""
 
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from urllib.request import Request, urlopen
 
+import lark_oapi as lark
+from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+
+from .config import FeishuDeliveryConfig
 from .datetime_utils import format_beijing_timestamp
 from .model import NewsItem
 
@@ -77,7 +80,7 @@ def _payload(
 ) -> dict[str, object]:
     return {
         "msg_type": "post",
-        "content": {"post": {"zh_cn": {"title": title, "content": paragraphs}}},
+        "content": {"zh_cn": {"title": title, "content": paragraphs}},
     }
 
 
@@ -100,37 +103,55 @@ def _item_paragraphs(item: NewsItem) -> list[list[dict[str, object]]]:
 class FeishuNotifier:
     def __init__(
         self,
-        webhook_url: str,
+        delivery: FeishuDeliveryConfig,
         timeout_seconds: float,
-        opener: Callable[..., object] = urlopen,
+        client_factory: Callable[[FeishuDeliveryConfig, float], object] | None = None,
     ) -> None:
-        self.webhook_url = webhook_url
-        self.timeout_seconds = timeout_seconds
-        self._opener = opener
-
-    def send(self, digest: Digest) -> None:
-        request = Request(
-            self.webhook_url,
-            data=digest.encoded,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
+        self.delivery = delivery
+        factory = _build_client if client_factory is None else client_factory
         try:
-            with self._opener(request, timeout=self.timeout_seconds) as response:
-                response_body = response.read(65_537)
+            self._client = factory(delivery, timeout_seconds)
         except Exception as exc:
             raise NotificationError(
-                f"Feishu webhook request failed: {type(exc).__name__}"
+                f"Feishu OpenAPI client initialization failed: {type(exc).__name__}"
             ) from exc
 
-        if len(response_body) > 65_536:
-            raise NotificationError("Feishu webhook returned an oversized response")
+    def send(self, digest: Digest) -> None:
         try:
-            result = json.loads(response_body)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            content = json.dumps(
+                digest.payload["content"], ensure_ascii=False, separators=(",", ":")
+            )
+            request = (
+                CreateMessageRequest.builder()
+                .receive_id_type(self.delivery.receive_id_type)
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(self.delivery.receive_id)
+                    .msg_type("post")
+                    .content(content)
+                    .build()
+                )
+                .build()
+            )
+            response = self._client.im.v1.message.create(request)  # type: ignore[attr-defined]
+            success = response.success()
+        except Exception as exc:
             raise NotificationError(
-                "Feishu webhook returned a non-JSON response"
+                f"Feishu OpenAPI request failed: {type(exc).__name__}"
             ) from exc
-        if not isinstance(result, dict) or result.get("code") != 0:
-            code = result.get("code") if isinstance(result, dict) else None
+
+        if not success:
+            code = getattr(response, "code", None)
+            if not isinstance(code, int):
+                code = None
             raise NotificationError(f"Feishu rejected the message (code={code!r})")
+
+
+def _build_client(delivery: FeishuDeliveryConfig, timeout_seconds: float) -> object:
+    return (
+        lark.Client.builder()
+        .app_id(delivery.app_id)
+        .app_secret(delivery.app_secret)
+        .timeout(timeout_seconds)
+        .build()
+    )

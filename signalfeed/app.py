@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TextIO
 
 from .collector import RSSCollector
-from .config import AppConfig, ModelConfig
+from .config import AppConfig, FeishuDeliveryConfig, ModelConfig
 from .datetime_utils import BEIJING_TIMEZONE, beijing_date
 from .filter import KeywordFilter
 from .model import ChineseSummary, NewsItem
@@ -41,7 +41,7 @@ def run(
     database_path: str | Path,
     output: TextIO,
     api_key: str,
-    webhook_url: str | None = None,
+    feishu_delivery: FeishuDeliveryConfig | None = None,
     collector_factory: Callable[..., object] = RSSCollector,
     notifier_factory: Callable[..., object] = FeishuNotifier,
     reader_factory: Callable[..., object] = JinaReader,
@@ -50,8 +50,8 @@ def run(
 ) -> int:
     if mode not in {"dry-run", "send"}:
         raise ValueError(f"unsupported mode: {mode}")
-    if mode == "send" and not webhook_url:
-        raise ValueError("FEISHU_WEBHOOK_URL is required in --send mode")
+    if mode == "send" and feishu_delivery is None:
+        raise ValueError("Feishu delivery configuration is required in --send mode")
     title = f"{beijing_date(clock())} · SignalFeed"
 
     collector = collector_factory(config.source, config.network)
@@ -123,7 +123,7 @@ def run(
             print(digest.encoded.decode("utf-8"), file=output)
         return 0
 
-    notifier = notifier_factory(webhook_url, config.network.timeout_seconds)
+    notifier = notifier_factory(feishu_delivery, config.network.timeout_seconds)
     sent_items = 0
     for digest in digests:
         notifier.send(digest)  # type: ignore[attr-defined]

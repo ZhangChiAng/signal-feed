@@ -9,6 +9,7 @@ from signalfeed.config import (
     load_dotenv,
     load_models_config,
     resolve_api_key,
+    resolve_feishu_delivery,
 )
 
 
@@ -18,7 +19,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.source.window_size, 20)
         self.assertEqual(config.filter.fields, ("title", "content"))
         self.assertIn("ChatGPT", config.filter.keywords)
-        self.assertLess(config.feishu.max_payload_bytes, 20 * 1024)
+        self.assertEqual(config.feishu.max_payload_bytes, 28 * 1024)
 
     def test_missing_config_is_a_config_error(self) -> None:
         with self.assertRaises(ConfigError):
@@ -27,7 +28,7 @@ class ConfigTests(unittest.TestCase):
     def test_legacy_feishu_fields_are_accepted_but_ignored(self) -> None:
         repository_config = Path(__file__).parents[1] / "config.toml"
         content = repository_config.read_text(encoding="utf-8").replace(
-            "max_payload_bytes = 18432",
+            "max_payload_bytes = 28672",
             'max_payload_bytes = 1024\ntitle = 42\nsummary_max_chars = "unused"',
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -94,11 +95,89 @@ api_key_env = "SIGNALFEED_LLM_API_KEY"
             set(environ),
             {
                 "SIGNALFEED_LLM_API_KEY",
-                "FEISHU_WEBHOOK_URL",
+                "FEISHU_APP_ID",
+                "FEISHU_APP_SECRET",
+                "FEISHU_RECEIVE_ID_TYPE",
+                "FEISHU_RECEIVE_ID",
                 "SIGNALFEED_DB_PATH",
             },
         )
         self.assertEqual(environ["SIGNALFEED_DB_PATH"], "data/signalfeed-zh.sqlite3")
+
+    def test_feishu_delivery_environment_loads_all_fields(self) -> None:
+        environ = {
+            "FEISHU_APP_ID": " cli_test ",
+            "FEISHU_APP_SECRET": " app-secret ",
+            "FEISHU_RECEIVE_ID_TYPE": " chat_id ",
+            "FEISHU_RECEIVE_ID": " oc_test ",
+        }
+        delivery = resolve_feishu_delivery(environ=environ)
+        self.assertEqual(delivery.app_id, "cli_test")
+        self.assertEqual(delivery.app_secret, "app-secret")
+        self.assertEqual(delivery.receive_id_type, "chat_id")
+        self.assertEqual(delivery.receive_id, "oc_test")
+
+    def test_feishu_delivery_reports_all_missing_fields_without_values(self) -> None:
+        with self.assertRaises(ConfigError) as raised:
+            resolve_feishu_delivery(environ={})
+        message = str(raised.exception)
+        for name in (
+            "FEISHU_APP_ID",
+            "FEISHU_APP_SECRET",
+            "FEISHU_RECEIVE_ID_TYPE",
+            "FEISHU_RECEIVE_ID",
+        ):
+            self.assertIn(name, message)
+
+    def test_feishu_delivery_id_type_is_restricted_and_sanitized(self) -> None:
+        allowed = ("chat_id", "open_id", "union_id", "user_id", "email")
+        for receive_id_type in allowed:
+            with self.subTest(receive_id_type=receive_id_type):
+                delivery = resolve_feishu_delivery(
+                    environ={
+                        "FEISHU_APP_ID": "cli_test",
+                        "FEISHU_APP_SECRET": "super-secret",
+                        "FEISHU_RECEIVE_ID_TYPE": receive_id_type,
+                        "FEISHU_RECEIVE_ID": "private-recipient",
+                    }
+                )
+                self.assertEqual(delivery.receive_id_type, receive_id_type)
+
+        with self.assertRaises(ConfigError) as raised:
+            resolve_feishu_delivery(
+                environ={
+                    "FEISHU_APP_ID": "cli_test",
+                    "FEISHU_APP_SECRET": "super-secret",
+                    "FEISHU_RECEIVE_ID_TYPE": "secret-invalid-type",
+                    "FEISHU_RECEIVE_ID": "private-recipient",
+                }
+            )
+        message = str(raised.exception)
+        self.assertNotIn("super-secret", message)
+        self.assertNotIn("private-recipient", message)
+        self.assertNotIn("secret-invalid-type", message)
+
+    def test_feishu_payload_limit_accepts_30_kib_boundary(self) -> None:
+        repository_config = Path(__file__).parents[1] / "config.toml"
+        original = repository_config.read_text(encoding="utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                original.replace(
+                    "max_payload_bytes = 28672", "max_payload_bytes = 30720"
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(load_config(path).feishu.max_payload_bytes, 30 * 1024)
+
+            path.write_text(
+                original.replace(
+                    "max_payload_bytes = 28672", "max_payload_bytes = 30721"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "30720"):
+                load_config(path)
 
     def test_model_config_errors_do_not_echo_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
