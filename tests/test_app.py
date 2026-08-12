@@ -11,6 +11,7 @@ from signalfeed.app import MAX_MODEL_CONCURRENCY, run
 from signalfeed.config import (
     AppConfig,
     FeishuConfig,
+    FeishuDeliveryConfig,
     FilterConfig,
     ModelConfig,
     NetworkConfig,
@@ -31,9 +32,10 @@ MODEL_CONFIG = ModelConfig(
 SUMMARY = ChineseSummary(
     "GPT 中文发布", ("第一条中文要点。", "第二条中文要点。", "第三条中文要点。")
 )
+DELIVERY = FeishuDeliveryConfig("cli_test", "app-secret", "chat_id", "oc_private")
 
 
-def test_config(max_payload_bytes: int = 18 * 1024) -> AppConfig:
+def test_config(max_payload_bytes: int = 28 * 1024) -> AppConfig:
     return AppConfig(
         source=SourceConfig("OpenAI News", "https://example.com/rss", 20),
         network=NetworkConfig(15, 5 * 1024 * 1024, "test"),
@@ -92,15 +94,17 @@ class AppTests(unittest.TestCase):
         config = kwargs.pop("config", test_config())
         return run(config, MODEL_CONFIG, **kwargs)  # type: ignore[arg-type]
 
-    def test_send_requires_webhook_before_collecting(self) -> None:
+    def test_send_requires_feishu_delivery_before_collecting(self) -> None:
         class ForbiddenCollector:
             def __init__(self, source: object, network: object) -> None:
                 raise AssertionError("collector should not be created")
 
-        with self.assertRaisesRegex(ValueError, "FEISHU_WEBHOOK_URL"):
+        with self.assertRaisesRegex(ValueError, "Feishu delivery configuration"):
             self.run_app(mode="send", collector_factory=ForbiddenCollector)
 
-    def test_dry_run_generates_chinese_without_webhook_or_database_writes(self) -> None:
+    def test_dry_run_generates_chinese_without_feishu_config_or_database_writes(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "data" / "state.sqlite3"
             output = StringIO()
@@ -175,8 +179,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(clock_calls, 1)
         self.assertTrue(
             all(
-                payload["content"]["post"]["zh_cn"]["title"]
-                == "2026-08-12 · SignalFeed"
+                payload["content"]["zh_cn"]["title"] == "2026-08-12 · SignalFeed"
                 for payload in payloads
             )
         )
@@ -187,7 +190,7 @@ class AppTests(unittest.TestCase):
             sent: list[object] = []
 
             class RecordingNotifier:
-                def __init__(self, webhook: str, timeout: float) -> None:
+                def __init__(self, delivery: object, timeout: float) -> None:
                     pass
 
                 def send(self, digest: object) -> None:
@@ -200,7 +203,7 @@ class AppTests(unittest.TestCase):
                     mode="send",
                     database_path=path,
                     output=output,
-                    webhook_url="https://example.com/hook",
+                    feishu_delivery=DELIVERY,
                     notifier_factory=RecordingNotifier,
                 )
                 outputs.append(output.getvalue())
@@ -214,7 +217,7 @@ class AppTests(unittest.TestCase):
             attempts = 0
 
             class FailingNotifier:
-                def __init__(self, webhook: str, timeout: float) -> None:
+                def __init__(self, delivery: object, timeout: float) -> None:
                     pass
 
                 def send(self, digest: object) -> None:
@@ -227,7 +230,7 @@ class AppTests(unittest.TestCase):
                     self.run_app(
                         mode="send",
                         database_path=path,
-                        webhook_url="https://example.com/hook",
+                        feishu_delivery=DELIVERY,
                         notifier_factory=FailingNotifier,
                     )
             self.assertEqual(attempts, 2)
@@ -272,7 +275,7 @@ class AppTests(unittest.TestCase):
         attempts: list[tuple[str, ...]] = []
 
         class FailSecondNotifier:
-            def __init__(self, webhook: str, timeout: float) -> None:
+            def __init__(self, delivery: object, timeout: float) -> None:
                 pass
 
             def send(self, digest: object) -> None:
@@ -287,7 +290,7 @@ class AppTests(unittest.TestCase):
                     config=test_config(limit),
                     mode="send",
                     database_path=path,
-                    webhook_url="https://example.com/hook",
+                    feishu_delivery=DELIVERY,
                     collector_factory=ThreeCollector,
                     notifier_factory=FailSecondNotifier,
                 )
@@ -297,7 +300,7 @@ class AppTests(unittest.TestCase):
                 config=test_config(limit),
                 mode="send",
                 database_path=path,
-                webhook_url="https://example.com/hook",
+                feishu_delivery=DELIVERY,
                 collector_factory=ThreeCollector,
                 notifier_factory=FailSecondNotifier,
             )
@@ -355,7 +358,7 @@ class AppTests(unittest.TestCase):
                     config=test_config(limit),
                     mode="send",
                     database_path=path,
-                    webhook_url="https://example.com/hook",
+                    feishu_delivery=DELIVERY,
                     collector_factory=TwoCollector,
                     summarizer_factory=OversizedSummarizer,
                     notifier_factory=forbidden_notifier,
@@ -392,7 +395,7 @@ class AppTests(unittest.TestCase):
         sent: list[object] = []
 
         class RecordingNotifier:
-            def __init__(self, webhook: str, timeout: float) -> None:
+            def __init__(self, delivery: object, timeout: float) -> None:
                 pass
 
             def send(self, digest: object) -> None:
@@ -404,7 +407,7 @@ class AppTests(unittest.TestCase):
                 self.run_app(
                     mode="send",
                     database_path=path,
-                    webhook_url="https://example.com/hook",
+                    feishu_delivery=DELIVERY,
                     collector_factory=TwoCollector,
                     summarizer_factory=FlakySummarizer,
                     notifier_factory=RecordingNotifier,
@@ -417,7 +420,7 @@ class AppTests(unittest.TestCase):
             self.run_app(
                 mode="send",
                 database_path=path,
-                webhook_url="https://example.com/hook",
+                feishu_delivery=DELIVERY,
                 collector_factory=TwoCollector,
                 summarizer_factory=FlakySummarizer,
                 notifier_factory=RecordingNotifier,

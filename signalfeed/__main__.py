@@ -14,6 +14,7 @@ from .config import (
     load_dotenv,
     load_models_config,
     resolve_api_key,
+    resolve_feishu_delivery,
 )
 from .notifier import NotificationError
 from .reader import ReaderError
@@ -45,10 +46,6 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    webhook_url = os.environ.get("FEISHU_WEBHOOK_URL")
-    if selected_mode == "send" and not webhook_url:
-        parser.error("FEISHU_WEBHOOK_URL is required in --send mode")
-
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
@@ -61,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         model_config = load_models_config(args.models_config)
         api_key = resolve_api_key(model_config)
+        feishu_delivery = resolve_feishu_delivery() if selected_mode == "send" else None
         return run(
             config,
             model_config,
@@ -68,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             database_path=database_path,
             output=sys.stdout,
             api_key=api_key,
-            webhook_url=webhook_url,
+            feishu_delivery=feishu_delivery,
         )
     except (
         CollectionError,

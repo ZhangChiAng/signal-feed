@@ -38,6 +38,14 @@ class FeishuConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class FeishuDeliveryConfig:
+    app_id: str
+    app_secret: str
+    receive_id_type: str
+    receive_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     source: SourceConfig
     network: NetworkConfig
@@ -105,8 +113,8 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     except TypeError as exc:
         raise ConfigError(f"invalid config structure: {exc}") from exc
 
-    if feishu.max_payload_bytes > 20 * 1024:
-        raise ConfigError("feishu.max_payload_bytes must not exceed 20480")
+    if feishu.max_payload_bytes > 30 * 1024:
+        raise ConfigError("feishu.max_payload_bytes must not exceed 30720")
     return AppConfig(source, network, filter_config, feishu)
 
 
@@ -189,6 +197,38 @@ def resolve_api_key(
     if not value:
         raise ConfigError(f"{config.api_key_env} is required")
     return value
+
+
+def resolve_feishu_delivery(
+    *,
+    environ: dict[str, str] | os._Environ[str] | None = None,
+) -> FeishuDeliveryConfig:
+    source = os.environ if environ is None else environ
+    names = (
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "FEISHU_RECEIVE_ID_TYPE",
+        "FEISHU_RECEIVE_ID",
+    )
+    values = {name: source.get(name, "").strip() for name in names}
+    missing = [name for name in names if not values[name]]
+    if missing:
+        raise ConfigError(
+            f"missing required Feishu environment variables: {', '.join(missing)}"
+        )
+
+    allowed_id_types = {"chat_id", "open_id", "union_id", "user_id", "email"}
+    receive_id_type = values["FEISHU_RECEIVE_ID_TYPE"]
+    if receive_id_type not in allowed_id_types:
+        allowed = ", ".join(sorted(allowed_id_types))
+        raise ConfigError(f"FEISHU_RECEIVE_ID_TYPE must be one of: {allowed}")
+
+    return FeishuDeliveryConfig(
+        app_id=values["FEISHU_APP_ID"],
+        app_secret=values["FEISHU_APP_SECRET"],
+        receive_id_type=receive_id_type,
+        receive_id=values["FEISHU_RECEIVE_ID"],
+    )
 
 
 def _nonempty_string(value: object, name: str) -> str:
