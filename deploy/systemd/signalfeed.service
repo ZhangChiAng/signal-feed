@@ -1,0 +1,31 @@
+[Unit]
+Description=SignalFeed Feishu digest
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@SERVICE_USER@
+WorkingDirectory=@DEPLOY_PATH@
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+ExecStart=/usr/bin/flock --wait 1800 @DEPLOY_PATH@/data/signalfeed.lock /usr/bin/timeout --signal=TERM --kill-after=30s 30m @DEPLOY_PATH@/.venv/bin/python -m signalfeed --send
+TimeoutStartSec=61m
+TimeoutStopSec=30s
+KillMode=mixed
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DEPLOY_PATH@/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true

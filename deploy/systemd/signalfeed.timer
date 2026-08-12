@@ -1,0 +1,13 @@
+[Unit]
+Description=Run SignalFeed three times daily (Asia/Shanghai)
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Asia/Shanghai
+OnCalendar=*-*-* 12:30:00 Asia/Shanghai
+OnCalendar=*-*-* 21:00:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=signalfeed.service
+
+[Install]
+WantedBy=timers.target

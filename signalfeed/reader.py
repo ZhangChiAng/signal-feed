@@ -2,6 +2,8 @@
 
 import re
 from collections.abc import Callable
+from contextlib import suppress
+from urllib.error import HTTPError
 from urllib.parse import urldefrag, urlsplit
 from urllib.request import Request, urlopen
 
@@ -44,6 +46,9 @@ class JinaReader:
             with self._opener(request, timeout=READER_TIMEOUT_SECONDS) as response:
                 payload = response.read(MAX_READER_BYTES + 1)
         except Exception as exc:
+            if isinstance(exc, HTTPError):
+                with suppress(OSError):
+                    exc.close()
             raise ReaderError(
                 f"Jina Reader request failed: {type(exc).__name__}"
             ) from exc

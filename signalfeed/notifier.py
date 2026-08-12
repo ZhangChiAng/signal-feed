@@ -1,15 +1,27 @@
 """Feishu application-bot rich-text notification support."""
 
+import atexit
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+from lark_oapi.ws.client import loop as _lark_ws_loop
 
 from .config import FeishuDeliveryConfig
 from .datetime_utils import format_beijing_timestamp
 from .model import NewsItem
+
+
+def _close_unused_lark_ws_loop() -> None:
+    """Close the SDK's import-time websocket loop, unused by this HTTP client."""
+
+    if not _lark_ws_loop.is_closed() and not _lark_ws_loop.is_running():
+        _lark_ws_loop.close()
+
+
+atexit.register(_close_unused_lark_ws_loop)
 
 
 class NotificationError(RuntimeError):
