@@ -1,5 +1,7 @@
 import unittest
+from pathlib import Path
 
+from signalfeed.config import load_config
 from signalfeed.filter import KeywordFilter
 from tests.helpers import news_item
 
@@ -30,6 +32,48 @@ class KeywordFilterTests(unittest.TestCase):
         self.assertFalse(
             keyword_filter.matches(news_item(title="Other", content="API"))
         )
+
+    def test_configured_vendor_and_bilingual_topic_keywords_match(self) -> None:
+        config_path = Path(__file__).parents[1] / "config.toml"
+        config = load_config(config_path)
+        expected_keywords = {
+            "Claude",
+            "Anthropic",
+            "DeepSeek",
+            "Kimi",
+            "GLM",
+            "MiniMax",
+            "model",
+            "agent",
+            "reasoning",
+            "context",
+            "模型",
+            "智能体",
+            "推理",
+            "上下文",
+        }
+        self.assertLessEqual(expected_keywords, set(config.filter.keywords))
+
+        keyword_filter = KeywordFilter(config.filter.keywords, ("title", "content"))
+        matching_text = (
+            "Claude gets a platform update",
+            "Anthropic publishes an engineering note",
+            "DeepSeek updates its API",
+            "Kimi ships a research preview",
+            "GLM adds tool use",
+            "MiniMax announces a release",
+            "A new foundation model is available",
+            "An autonomous agent runtime",
+            "Better reasoning at inference time",
+            "A longer context window",
+            "发布新的基础模型",
+            "智能体编排能力升级",
+            "提升复杂推理效率",
+            "扩展长上下文窗口",
+        )
+        for text in matching_text:
+            with self.subTest(text=text):
+                self.assertTrue(keyword_filter.matches(news_item(title=text)))
 
 
 if __name__ == "__main__":

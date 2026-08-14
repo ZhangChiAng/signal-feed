@@ -16,7 +16,59 @@ class ConfigError(ValueError):
 class SourceConfig:
     name: str
     url: str
-    window_size: int
+    window_size: int = 20
+    collector: str = "rss"
+    transport: str = "direct"
+    content_mode: str = "article"
+    allowed_hosts: tuple[str, ...] = ()
+    filter: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate programmatic construction as strictly as TOML loading."""
+
+        name = _nonempty_string(self.name, "sources.name")
+        url = _source_url(self.url, "sources.url")
+        window_size = _positive_int(self.window_size, "sources.window_size")
+        collector = _enum_value(
+            self.collector,
+            "sources.collector",
+            {
+                "rss",
+                "markdown_index",
+                "markdown_changelog",
+                "markdown_cards",
+                "next_data_index",
+            },
+        )
+        transport = _enum_value(self.transport, "sources.transport", {"direct", "jina"})
+        content_mode = _enum_value(
+            self.content_mode, "sources.content_mode", {"article", "inline"}
+        )
+        if not isinstance(self.filter, bool):
+            raise ConfigError("sources.filter must be a boolean")
+
+        if self.allowed_hosts:
+            allowed_hosts = _host_tuple(self.allowed_hosts, "sources.allowed_hosts")
+        else:
+            # Programmatic three-argument construction was the public API before
+            # multi-source support.  Deriving its single host preserves that API;
+            # new TOML entries are still required to declare the allow-list.
+            host = urlsplit(url).hostname
+            if host is None:  # pragma: no cover - guarded by _source_url
+                raise ConfigError("sources.url must contain a host")
+            allowed_hosts = (host.lower(),)
+
+        source_host = urlsplit(url).hostname
+        if source_host is None or not _host_is_allowed(source_host, allowed_hosts):
+            raise ConfigError("sources.allowed_hosts must allow the source URL host")
+
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "url", url)
+        object.__setattr__(self, "window_size", window_size)
+        object.__setattr__(self, "collector", collector)
+        object.__setattr__(self, "transport", transport)
+        object.__setattr__(self, "content_mode", content_mode)
+        object.__setattr__(self, "allowed_hosts", allowed_hosts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,12 +97,51 @@ class FeishuDeliveryConfig:
     receive_id: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class AppConfig:
-    source: SourceConfig
+    sources: tuple[SourceConfig, ...]
     network: NetworkConfig
     filter: FilterConfig
     feishu: FeishuConfig
+
+    def __init__(
+        self,
+        sources: tuple[SourceConfig, ...] | SourceConfig | None = None,
+        network: NetworkConfig | None = None,
+        filter: FilterConfig | None = None,
+        feishu: FeishuConfig | None = None,
+        *,
+        source: SourceConfig | None = None,
+    ) -> None:
+        """Build an application config, accepting the legacy ``source=`` alias."""
+
+        if source is not None:
+            if sources is not None:
+                raise ConfigError("configure either source or sources, not both")
+            normalized_sources = (source,)
+        elif isinstance(sources, SourceConfig):
+            # Also preserve the old positional AppConfig(source, ...) spelling.
+            normalized_sources = (sources,)
+        elif isinstance(sources, tuple) and sources:
+            normalized_sources = sources
+        else:
+            raise ConfigError("sources must contain at least one source")
+        if not all(isinstance(entry, SourceConfig) for entry in normalized_sources):
+            raise ConfigError("sources must contain only SourceConfig values")
+        if network is None or filter is None or feishu is None:
+            raise ConfigError("network, filter, and feishu configurations are required")
+
+        _validate_unique_source_names(normalized_sources)
+        object.__setattr__(self, "sources", normalized_sources)
+        object.__setattr__(self, "network", network)
+        object.__setattr__(self, "filter", filter)
+        object.__setattr__(self, "feishu", feishu)
+
+    @property
+    def source(self) -> SourceConfig:
+        """The first source, retained for callers migrating from single-source."""
+
+        return self.sources[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,16 +163,10 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         ) from exc
 
     try:
-        source_raw = raw["source"]
         network_raw = raw["network"]
         filter_raw = raw["filter"]
         feishu_raw = raw["feishu"]
-
-        source = SourceConfig(
-            name=_nonempty_string(source_raw["name"], "source.name"),
-            url=_http_url(source_raw["url"], "source.url"),
-            window_size=_positive_int(source_raw["window_size"], "source.window_size"),
-        )
+        sources = _load_sources(raw)
         network = NetworkConfig(
             timeout_seconds=_positive_number(
                 network_raw["timeout_seconds"], "network.timeout_seconds"
@@ -115,7 +200,7 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
 
     if feishu.max_payload_bytes > 30 * 1024:
         raise ConfigError("feishu.max_payload_bytes must not exceed 30720")
-    return AppConfig(source, network, filter_config, feishu)
+    return AppConfig(sources, network, filter_config, feishu)
 
 
 def load_models_config(path: str | Path = "models.toml") -> ModelConfig:
@@ -231,6 +316,104 @@ def resolve_feishu_delivery(
     )
 
 
+def _load_sources(raw: dict[str, object]) -> tuple[SourceConfig, ...]:
+    has_legacy = "source" in raw
+    has_array = "sources" in raw
+    if has_legacy == has_array:
+        if has_legacy:
+            raise ConfigError("configure either [source] or [[sources]], not both")
+        raise ConfigError("missing config key: sources")
+
+    if has_legacy:
+        source_raw = raw["source"]
+        if not isinstance(source_raw, dict):
+            raise ConfigError("invalid config structure: source must be a table")
+        try:
+            source = SourceConfig(
+                name=_nonempty_string(source_raw["name"], "source.name"),
+                url=_source_url(source_raw["url"], "source.url"),
+                window_size=_positive_int(
+                    source_raw.get("window_size", 20), "source.window_size"
+                ),
+            )
+        except KeyError as exc:
+            raise ConfigError(f"missing config key: source.{exc.args[0]}") from exc
+        return (source,)
+
+    source_array = raw["sources"]
+    if not isinstance(source_array, list) or not source_array:
+        raise ConfigError("sources must be a non-empty array of tables")
+    sources: list[SourceConfig] = []
+    required = {
+        "name",
+        "url",
+        "collector",
+        "transport",
+        "content_mode",
+        "allowed_hosts",
+        "filter",
+    }
+    supported = required | {"window_size"}
+    for index, source_raw in enumerate(source_array, start=1):
+        prefix = f"sources[{index}]"
+        if not isinstance(source_raw, dict):
+            raise ConfigError(f"{prefix} must be a table")
+        missing = required - set(source_raw)
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise ConfigError(f"{prefix} is missing required fields: {names}")
+        unsupported = set(source_raw) - supported
+        if unsupported:
+            names = ", ".join(sorted(unsupported))
+            raise ConfigError(f"{prefix} contains unsupported fields: {names}")
+        sources.append(
+            SourceConfig(
+                name=_nonempty_string(source_raw["name"], f"{prefix}.name"),
+                url=_source_url(source_raw["url"], f"{prefix}.url"),
+                window_size=_positive_int(
+                    source_raw.get("window_size", 20), f"{prefix}.window_size"
+                ),
+                collector=_enum_value(
+                    source_raw["collector"],
+                    f"{prefix}.collector",
+                    {
+                        "rss",
+                        "markdown_index",
+                        "markdown_changelog",
+                        "markdown_cards",
+                        "next_data_index",
+                    },
+                ),
+                transport=_enum_value(
+                    source_raw["transport"],
+                    f"{prefix}.transport",
+                    {"direct", "jina"},
+                ),
+                content_mode=_enum_value(
+                    source_raw["content_mode"],
+                    f"{prefix}.content_mode",
+                    {"article", "inline"},
+                ),
+                allowed_hosts=_host_tuple(
+                    source_raw["allowed_hosts"], f"{prefix}.allowed_hosts"
+                ),
+                filter=_boolean(source_raw["filter"], f"{prefix}.filter"),
+            )
+        )
+    result = tuple(sources)
+    _validate_unique_source_names(result)
+    return result
+
+
+def _validate_unique_source_names(sources: tuple[SourceConfig, ...]) -> None:
+    seen: set[str] = set()
+    for source in sources:
+        normalized = source.name.casefold()
+        if normalized in seen:
+            raise ConfigError(f"source names must be unique: {source.name}")
+        seen.add(normalized)
+
+
 def _nonempty_string(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{name} must be a non-empty string")
@@ -241,6 +424,24 @@ def _http_url(value: object, name: str) -> str:
     text = _nonempty_string(value, name)
     if not text.startswith(("https://", "http://")):
         raise ConfigError(f"{name} must be an HTTP(S) URL")
+    return text
+
+
+def _source_url(value: object, name: str) -> str:
+    text = _http_url(value, name)
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except ValueError as exc:
+        raise ConfigError(f"{name} is not a valid URL") from exc
+    if (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        and not 1 <= port <= 65535
+    ):
+        raise ConfigError(f"{name} must contain a host and no credentials")
     return text
 
 
@@ -286,8 +487,76 @@ def _positive_number(value: object, name: str) -> float:
     return float(value)
 
 
+def _boolean(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{name} must be a boolean")
+    return value
+
+
+def _enum_value(value: object, name: str, allowed: set[str]) -> str:
+    text = _nonempty_string(value, name)
+    if text not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ConfigError(f"{name} must be one of: {choices}")
+    return text
+
+
 def _string_tuple(value: object, name: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
         raise ConfigError(f"{name} must be a non-empty array")
     result = tuple(_nonempty_string(entry, name) for entry in value)
     return result
+
+
+def _host_tuple(value: object, name: str) -> tuple[str, ...]:
+    if not isinstance(value, list | tuple) or not value:
+        raise ConfigError(f"{name} must be a non-empty array")
+    result: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        host = _nonempty_string(entry, name).lower().rstrip(".")
+        if (
+            "*" in host
+            or "://" in host
+            or any(character in host for character in "/?#@")
+        ):
+            raise ConfigError(f"{name} entries must be host names without wildcards")
+        try:
+            parsed = urlsplit(f"//{host}")
+            port = parsed.port
+        except ValueError as exc:
+            raise ConfigError(f"{name} contains an invalid host") from exc
+        if (
+            not parsed.hostname
+            or parsed.hostname.lower().rstrip(".") != host
+            or port
+            or not _is_hostname(host)
+        ):
+            raise ConfigError(f"{name} contains an invalid host")
+        if host not in seen:
+            seen.add(host)
+            result.append(host)
+    return tuple(result)
+
+
+def _is_hostname(value: str) -> bool:
+    if len(value) > 253:
+        return False
+    labels = value.split(".")
+    return all(
+        label
+        and len(label) <= 63
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(character.isalnum() or character == "-" for character in label)
+        and label.isascii()
+        for label in labels
+    )
+
+
+def _host_is_allowed(host: str, allowed_hosts: tuple[str, ...]) -> bool:
+    normalized = host.lower().rstrip(".")
+    return any(
+        normalized == allowed or normalized.endswith(f".{allowed}")
+        for allowed in allowed_hosts
+    )

@@ -1,11 +1,12 @@
 # SignalFeed
 
-SignalFeed 从 OpenAI 官方 RSS 的最新 20 条内容中筛选关键词，通过 Jina Reader 提取文章正文，再用一个 Responses 兼容模型生成简体中文标题和 3–5 条完整要点，最后把尚未成功送达的条目按大小自动拆成多条飞书富文本简报。
+SignalFeed 从 OpenAI、Anthropic、DeepSeek、Kimi、GLM 和 MiniMax 的 14 个高信号官方入口发现新内容，通过确定性 Collector、跨来源精确去重和按信源配置的 Jina Reader 提取正文，再用一个 Responses 兼容模型生成简体中文标题和 3–5 条完整要点。每篇文章独立发送一条飞书富文本消息并立即记录送达，单篇失败不会阻塞其他文章。
 
 ## 项目文档
 
 - [产品愿景与路线图](docs/product-vision.md)
-- [单一官方信源闭环技术规格](docs/single-source-specification.md)
+- [六厂商多信源技术规格](docs/multi-source-specification.md)
+- [单一官方信源闭环技术规格（历史基线）](docs/single-source-specification.md)
 - [从零部署与运行验收](docs/deploy-from-scratch.md)
 
 ## 准备
@@ -42,7 +43,9 @@ install -m 0600 .env.example .env
 
 `.env`、`models.toml` 和 `data/` 都不会被 Git 跟踪。应用错误不会回显模型 API Key、App Secret、接收者 ID 或带凭据的 URL。
 
-信源、检查窗口、RSS 网络限制、匹配字段、关键词和飞书消息大小位于 `config.toml`。默认同时检查 `title` 与 `content`；匹配忽略大小写，并为英文关键词使用 ASCII 单词边界。
+信源、检查窗口、网络限制、匹配字段、关键词和飞书消息大小位于 `config.toml`。每个 `[[sources]]` 都包含稳定唯一的 `name`、`url`、`collector`、`transport`、`content_mode`、`window_size`、`allowed_hosts` 和布尔 `filter`。`filter = true` 才应用全局 `[filter]`；匹配忽略大小写，并为英文关键词使用 ASCII 单词边界。支持的 Collector 固定为 `rss`、`markdown_index`、`markdown_changelog`、`markdown_cards` 和 `next_data_index`，列表解析不使用 LLM。
+
+旧 `[source]` 配置仍会映射为单个 RSS 原文来源。信源名称同时是 SQLite 持久化身份，建立状态后不要随意改名；原有 `OpenAI News` 名称和送达记录继续生效。完整的 14 个入口与字段约束见[多信源技术规格](docs/multi-source-specification.md)。
 
 ## 安全预览
 
@@ -50,11 +53,13 @@ install -m 0600 .env.example .env
 uv run --locked python -m signalfeed --dry-run
 ```
 
-dry-run 会真实访问 OpenAI RSS、Jina Reader 和模型 API，并按发送顺序每行打印一条完整的飞书逻辑消息 JSON；它不要求飞书应用配置，不会访问飞书 OpenAPI，也不会输出凭证或接收者，不会创建或修改 SQLite。若数据库已存在，预览会读取送达状态和命中的中文缓存，但不会写入任何内容。
+dry-run 会真实访问配置的官方入口；遇到已有基线之外的新文章时，也会按需访问 Jina Reader 和模型 API，并按发送顺序预览每篇飞书逻辑消息。它不要求飞书应用配置，不会访问飞书 OpenAPI，也不会输出凭证或接收者。若来源尚未初始化，dry-run 只显示基线预览；无论数据库是否存在，都不会创建目录、数据库、表或记录。已有数据库中的送达状态和中文缓存只读复用。
 
-Jina Reader 只接受 RSS 中的 HTTPS `openai.com` 文章，客户端超时为 45 秒、响应上限为 1 MiB、正文上限为 6000 tokens，并移除图片和正文链接。模型调用使用官方 OpenAI Python SDK 的异步客户端，超时 60 秒、关闭 SDK 重试、设置 `store=false`，单次输出上限为 8192 tokens。模型请求并行执行，并以信号量将“请求发出后到响应完成前”的并发数硬限制为 500；Jina 正文读取仍保持单路。输出会在本地再次严格验证为一个中文标题和 3–5 条完整中文要点，最终消息顺序仍与 RSS 顺序一致。
+Jina Reader 按当前信源接收域名白名单，只允许无凭证的 HTTPS URL，以及白名单主机本身或其子域。客户端超时为 45 秒、响应上限为 1 MiB、正文上限为 6000 tokens；列表页保留链接但移除图片，文章正文继续移除图片、裸 URL 和链接目标。Kimi 官方页面发现的官方 GitHub/Hugging Face 项目可以作为文章目标，但不会扩展为两个站点的主动信源。
 
-RSS 发布时间会统一转换为北京时间。每次运行开始时生成一次北京时间日期，所有消息使用共同标题 `YYYY-MM-DD · SignalFeed`；每篇中文新闻标题直接显示为蓝色原文链接，不再额外显示“查看原文”行，发布时间显示为 `北京时间：YYYY-MM-DD HH:MM:SS`。程序不会在本地截断模型生成的标题或摘要，也不会追加省略号。
+模型调用使用官方 OpenAI Python SDK 的异步客户端，超时 60 秒、关闭 SDK 重试、设置 `store=false`，单次输出上限为 8192 tokens。摘要可以并行生成，输出会在本地严格验证为一个中文标题和 3–5 条完整中文要点；发送顺序仍按配置中的来源顺序和各官方列表顺序。
+
+Feed 中的完整发布时间会转换为北京时间；页面只提供日期或月份时保留该精度，不伪造具体时分秒或日期。每篇消息标题为 `YYYY-MM-DD · SignalFeed · {来源}`，中文新闻标题直接显示为蓝色原文链接，不额外显示“查看原文”行。程序不会在本地截断模型生成的标题或摘要，也不会追加省略号。
 
 可通过 `--config PATH` 和 `--models-config PATH` 分别覆盖业务配置与模型配置。
 
@@ -74,13 +79,13 @@ RSS 发布时间会统一转换为北京时间。每次运行开始时生成一�
 uv run --locked python -m signalfeed --send
 ```
 
-`--send` 会在采集前完整校验四项飞书环境变量，缺失或接收者类型非法时立即失败。SDK 使用 App ID/App Secret 获取并管理 `tenant_access_token`。中文生成成功后立即写入缓存；所有消息会在发送前完成大小预检，单篇完整摘要若无法装入一条消息，本轮不会发送任何内容。某个正文或模型调用失败时，整轮也不会发送，已成功生成的中文缓存会在下次复用，不会退回英文摘要。
+`--send` 会在采集前完整校验四项飞书环境变量，缺失或接收者类型非法时立即失败。SDK 使用 App ID/App Secret 获取并管理 `tenant_access_token`。空数据库首次运行时，所有成功采集的来源只在 SQLite 中建立窗口基线，不补发历史内容；以后新增的来源也各自原子建立基线。旧数据库若已有 `OpenAI News` 送达记录，会自动把该来源视为已初始化。
 
-通过预检后，程序会按 RSS 顺序贪心拆分并顺序发送所有不超过默认 28 KiB 的逻辑消息，为飞书 30 KiB 富文本限制保留约 2 KiB 的 OpenAPI 封装余量。每批收到成功的 OpenAPI 业务响应后立即记录该批送达；若中途失败则停止，下一次运行只补发尚未成功的条目。全部条目成功送达后，再次运行应输出：
+每篇新增文章依次完成正文取得、中文摘要、单篇消息构建、发送和送达记账。摘要成功后立即缓存；消息必须完整装入默认 28 KiB 上限，为飞书 30 KiB 富文本限制保留约 2 KiB OpenAPI 封装余量；发送成功后立即记录该篇送达。正文、摘要、超大消息、构建或发送失败都只影响当前文章，失败项保留下轮重试，后续文章继续处理。
 
-```text
-No new matching items.
-```
+来源或文章失败时，程序会向同一飞书目标最佳努力发送包含来源、文章名和失败阶段的小型告警。告警成功后，同一故障事件在恢复前不重复提醒；文章成功送达或来源恢复采集会清除活动故障，但不发送恢复通知。告警自身失败不会递归告警，并会在下轮继续尝试。
+
+本轮只要存在任意来源或文章失败，CLI 会在处理其他文章后返回 `1`；全部成功、只建立基线或没有新增内容时返回 `0`。结束时会输出发送、失败、基线和跳过数量汇总。
 
 ## 自动运行与部署
 
@@ -102,7 +107,7 @@ service 和 CD 共用 `data/signalfeed.lock`，避免任务重叠或在运行中
 journalctl -u signalfeed.service
 ```
 
-仓库中的 `deploy/systemd/` 是管理员安装模板。日常 CD 不会覆盖 `/etc/systemd/system`；只有首次初始化或明确更新部署配置时才应按[从零部署说明](docs/deploy-from-scratch.md)重新渲染并安装单元文件。首版没有主动失败告警，启用后需人工完成 7 天、21 个计划时点的观察。
+仓库中的 `deploy/systemd/` 是管理员安装模板。日常 CD 不会覆盖 `/etc/systemd/system`；只有首次初始化或明确更新部署配置时才应按[从零部署说明](docs/deploy-from-scratch.md)重新渲染并安装单元文件。多信源版本沿用原调度和接收目标；内容故障由飞书一次性告警补充可见性，systemd 状态和 journald 仍用于进程级巡检。
 
 ## 测试
 
@@ -115,9 +120,8 @@ uv run --locked python -m compileall -q signalfeed tests
 
 ## 当前非目标
 
-- 只支持 OpenAI RSS、最新 20 条和单进程一次性 CLI；生产调度依赖 systemd，模型请求并发上限固定为 500；
-- Jina Reader 是当前允许的第三方正文提取服务；
-- 每次运行只向一个配置目标发送，不接收飞书事件；部署与定时运行通过文件锁串行化；
-- 不增加额外发送重试或 OpenAPI `uuid` 去重；
-- 不提供主动失败告警，当前依赖 systemd 状态和 journald 人工巡检；
+- 不接入 Codex、Claude Code、Kimi Code 或 MiniMax Agent 的逐版本补丁流水；
+- 不做标题相似度、语义去重、排序评分或 GitHub/Hugging Face 主动发现；
+- 不新增调度时间、模型协议、飞书目标、额外失败重试或 OpenAPI `uuid` 去重；
+- 每次运行仍只向一个配置目标发送，不接收飞书事件；部署与定时运行通过文件锁串行化；
 - 飞书成功与本地 SQLite 提交无法形成跨系统原子事务，极端情况下可能重复发送一次。

@@ -25,12 +25,13 @@ URL Source: https://openai.com/test
             return FakeResponse(body)
 
         content = JinaReader("SignalFeed/Test", opener).read(
-            "https://openai.com/index/test#section"
+            "https://developers.openai.com/index/test#section",
+            allowed_hosts=("openai.com",),
         )
         request = seen["request"]
         self.assertEqual(
             request.full_url,
-            "https://r.jina.ai/https://openai.com/index/test",  # type: ignore[union-attr]
+            "https://r.jina.ai/https://developers.openai.com/index/test",  # type: ignore[union-attr]
         )
         self.assertEqual(request.get_method(), "GET")  # type: ignore[union-attr]
         self.assertEqual(request.get_header("X-token-budget"), "6000")  # type: ignore[union-attr]
@@ -42,16 +43,88 @@ URL Source: https://openai.com/test
         self.assertNotIn("http", content)
         self.assertNotIn("image", content)
 
-    def test_allows_only_https_openai_articles(self) -> None:
+    def test_source_allowlist_accepts_exact_hosts_and_subdomains(self) -> None:
+        requested: list[str] = []
+
+        def opener(request: object, *, timeout: float) -> FakeResponse:
+            requested.append(request.full_url)  # type: ignore[union-attr]
+            return FakeResponse(b"article")
+
+        reader = JinaReader("test", opener)
+        reader.read("https://anthropic.com/news/test", allowed_hosts=("anthropic.com",))
+        reader.read(
+            "https://www.anthropic.com/engineering/test",
+            allowed_hosts=("anthropic.com",),
+        )
+
+        self.assertEqual(
+            requested,
+            [
+                "https://r.jina.ai/https://anthropic.com/news/test",
+                "https://r.jina.ai/https://www.anthropic.com/engineering/test",
+            ],
+        )
+
+    def test_default_allowlist_preserves_openai_only_compatibility(self) -> None:
+        reader = JinaReader("test", lambda request, timeout: FakeResponse(b"article"))
+        self.assertEqual(reader.read("https://openai.com/test"), "article")
+        with self.assertRaises(ReaderError):
+            reader.read("https://anthropic.com/test")
+
+    def test_rejects_urls_outside_the_source_allowlist(self) -> None:
         forbidden = [
-            "http://openai.com/test",
+            "http://anthropic.com/test",
             "https://example.com/test",
-            "https://openai.com.evil.test/test",
-            "https://user:secret@openai.com/test",
+            "https://anthropic.com.evil.test/test",
+            "https://user:secret@anthropic.com/test",
         ]
         for url in forbidden:
             with self.subTest(url=url), self.assertRaises(ReaderError):
-                JinaReader("test", lambda request, timeout: None).read(url)
+                JinaReader("test", lambda request, timeout: None).read(
+                    url, allowed_hosts=("anthropic.com",)
+                )
+
+    def test_rejects_empty_or_malformed_host_allowlists(self) -> None:
+        invalid = [
+            (),
+            ("https://anthropic.com",),
+            ("anthropic.com:443",),
+            ("anthropic com",),
+        ]
+        for allowed_hosts in invalid:
+            with (
+                self.subTest(allowed_hosts=allowed_hosts),
+                self.assertRaises(ReaderError),
+            ):
+                JinaReader("test", lambda request, timeout: None).read(
+                    "https://anthropic.com/test", allowed_hosts=allowed_hosts
+                )
+
+    def test_index_mode_retains_links_but_removes_images(self) -> None:
+        seen: dict[str, object] = {}
+        body = b"""Title: Index
+URL Source: https://www.anthropic.com/news
+
+![cover](https://cdn.example/cover.png)
+[Claude news](https://www.anthropic.com/news/claude)
+"""
+
+        def opener(request: object, *, timeout: float) -> FakeResponse:
+            seen["request"] = request
+            return FakeResponse(body)
+
+        content = JinaReader("test", opener).read(
+            "https://www.anthropic.com/news",
+            allowed_hosts=("anthropic.com",),
+            retain_links=True,
+        )
+
+        request = seen["request"]
+        self.assertEqual(request.get_header("X-retain-links"), "all")  # type: ignore[union-attr]
+        self.assertEqual(request.get_header("X-retain-images"), "none")  # type: ignore[union-attr]
+        self.assertIn("[Claude news](https://www.anthropic.com/news/claude)", content)
+        self.assertNotIn("cover", content)
+        self.assertNotIn("URL Source:", content)
 
     def test_response_limit_and_network_errors_are_sanitized(self) -> None:
         with self.assertRaisesRegex(ReaderError, "1048576"):

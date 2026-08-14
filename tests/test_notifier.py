@@ -9,6 +9,7 @@ from signalfeed.notifier import (
     NotificationError,
     _build_client,
     build_digests,
+    build_failure_digest,
 )
 from tests.helpers import news_item
 
@@ -21,6 +22,54 @@ DELIVERY = FeishuDeliveryConfig(
 
 
 class NotifierTests(unittest.TestCase):
+    def test_single_article_message_title_includes_source(self) -> None:
+        item = news_item(source="Anthropic Engineering")
+        title = "2026-08-14 · SignalFeed · Anthropic Engineering"
+
+        (digest,) = build_digests(
+            [item],
+            title=title,
+            max_payload_bytes=5000,
+        )
+
+        post = digest.payload["content"]["zh_cn"]  # type: ignore[index]
+        self.assertEqual(post["title"], title)
+        self.assertEqual(digest.items, (item,))
+
+    def test_page_date_and_month_keep_their_original_precision(self) -> None:
+        cases = (
+            ("2026-08-10", "2026-08-10", "2026-08-10 00:00:00"),
+            ("2026-08", "2026-08", "2026-08-01"),
+        )
+
+        for published_at, expected, fabricated in cases:
+            with self.subTest(published_at=published_at):
+                (digest,) = build_digests(
+                    [news_item(published_at=published_at)],
+                    title="2026-08-14 · SignalFeed · OpenAI API Changelog",
+                    max_payload_bytes=5000,
+                )
+                body = digest.encoded.decode("utf-8")
+                self.assertIn(f"发布日期：{expected}", body)
+                self.assertNotIn(fabricated, body)
+                self.assertNotIn("00:00:00", body)
+
+    def test_failure_digest_contains_source_article_and_stage(self) -> None:
+        digest = build_failure_digest(
+            title="2026-08-14 · SignalFeed · 失败告警",
+            source="Kimi Research",
+            article_title="Moonshot AI 发布新的长上下文模型",
+            stage="正文提取",
+            max_payload_bytes=5000,
+        )
+
+        body = digest.encoded.decode("utf-8")
+        self.assertEqual(digest.items, ())
+        self.assertIn("来源：Kimi Research", body)
+        self.assertIn("文章：Moonshot AI 发布新的长上下文模型", body)
+        self.assertIn("失败阶段：正文提取", body)
+        self.assertLessEqual(len(digest.encoded), 5000)
+
     def test_builds_linked_complete_post_with_beijing_time(self) -> None:
         long_title = "中文长标题" * 70
         long_summary = "完整摘要。" * 100

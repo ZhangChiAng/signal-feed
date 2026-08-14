@@ -1,7 +1,7 @@
 [project]
 name = "signalfeed"
 version = "0.1.0"
-description = "A minimal RSS-to-Feishu signal feed"
+description = "A multi-vendor official AI signal feed for Feishu"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [

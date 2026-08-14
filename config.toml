@@ -1,31 +1,193 @@
-[source]
+[[sources]]
 name = "OpenAI News"
 url = "https://openai.com/news/rss.xml"
+collector = "rss"
+transport = "direct"
+content_mode = "article"
 window_size = 20
+allowed_hosts = ["openai.com"]
+filter = true
+
+[[sources]]
+name = "OpenAI Developer Blog"
+url = "https://developers.openai.com/blog"
+collector = "markdown_index"
+transport = "jina"
+content_mode = "article"
+window_size = 20
+allowed_hosts = ["developers.openai.com"]
+filter = false
+
+[[sources]]
+name = "OpenAI API Changelog"
+url = "https://developers.openai.com/api/docs/changelog"
+collector = "markdown_changelog"
+transport = "direct"
+content_mode = "inline"
+window_size = 20
+allowed_hosts = ["developers.openai.com"]
+filter = false
+
+[[sources]]
+name = "Anthropic Newsroom"
+url = "https://www.anthropic.com/news"
+collector = "markdown_index"
+transport = "jina"
+content_mode = "article"
+window_size = 20
+allowed_hosts = ["anthropic.com"]
+filter = true
+
+[[sources]]
+name = "Anthropic Engineering"
+url = "https://www.anthropic.com/engineering"
+collector = "markdown_index"
+transport = "jina"
+content_mode = "article"
+window_size = 20
+allowed_hosts = ["anthropic.com"]
+filter = false
+
+[[sources]]
+name = "Claude Platform Release Notes"
+url = "https://platform.claude.com/docs/en/release-notes/overview"
+collector = "markdown_changelog"
+transport = "direct"
+content_mode = "inline"
+window_size = 20
+allowed_hosts = ["platform.claude.com"]
+filter = false
+
+[[sources]]
+name = "DeepSeek API Change Log"
+url = "https://api-docs.deepseek.com/updates/"
+collector = "markdown_changelog"
+transport = "jina"
+content_mode = "inline"
+window_size = 20
+allowed_hosts = ["api-docs.deepseek.com"]
+filter = false
+
+[[sources]]
+name = "Kimi Research"
+url = "https://www.kimi.com/blog/"
+collector = "next_data_index"
+transport = "direct"
+content_mode = "article"
+window_size = 20
+allowed_hosts = [
+  "kimi.com",
+  "github.com",
+  "huggingface.co",
+  "moonshotai.github.io",
+]
+filter = false
+
+[[sources]]
+name = "Kimi Open Platform Blog"
+url = "https://platform.kimi.com/blog"
+collector = "markdown_index"
+transport = "jina"
+content_mode = "article"
+window_size = 20
+allowed_hosts = ["platform.kimi.com"]
+filter = true
+
+[[sources]]
+name = "Kimi Open Platform Changelog"
+url = "https://platform.kimi.com/blog/posts/changelog"
+collector = "markdown_changelog"
+transport = "jina"
+content_mode = "inline"
+window_size = 20
+allowed_hosts = ["platform.kimi.com"]
+filter = false
+
+[[sources]]
+name = "GLM Z.AI Model Releases"
+url = "https://docs.z.ai/release-notes/new-released/rss.xml"
+collector = "rss"
+transport = "direct"
+content_mode = "inline"
+window_size = 20
+allowed_hosts = ["docs.z.ai"]
+filter = false
+
+[[sources]]
+name = "MiniMax News"
+url = "https://www.minimax.io/news"
+collector = "markdown_index"
+transport = "jina"
+content_mode = "article"
+window_size = 20
+allowed_hosts = ["minimax.io"]
+filter = true
+
+[[sources]]
+name = "MiniMax Model Releases"
+url = "https://platform.minimax.io/docs/release-notes/models"
+collector = "markdown_cards"
+transport = "direct"
+content_mode = "article"
+window_size = 20
+allowed_hosts = ["minimax.io"]
+filter = false
+
+[[sources]]
+name = "MiniMax API Releases"
+url = "https://platform.minimax.io/docs/release-notes/apis"
+collector = "markdown_changelog"
+transport = "direct"
+content_mode = "inline"
+window_size = 20
+allowed_hosts = ["platform.minimax.io"]
+filter = false
 
 [network]
 timeout_seconds = 15
 max_response_bytes = 5242880
-user_agent = "SignalFeed/0.1 (+https://openai.com/news/rss.xml)"
+user_agent = "SignalFeed/0.2 (+https://github.com/)"
 
 [filter]
 fields = ["title", "content"]
 keywords = [
   "OpenAI",
+  "Anthropic",
+  "Claude",
+  "DeepSeek",
+  "Kimi",
+  "Moonshot",
+  "GLM",
+  "Zhipu",
+  "MiniMax",
   "GPT",
   "LLM",
   "AI",
   "API",
   "SDK",
+  "MCP",
   "Codex",
+  "ChatGPT",
   "agent",
   "agents",
-  "IDE",
-  "model",
-  "reasoning",
-  "multimodal",
-  "ChatGPT",
   "agentic",
+  "model",
+  "models",
+  "reasoning",
+  "inference",
+  "context",
+  "multimodal",
+  "tool calling",
+  "fine-tuning",
+  "embedding",
+  "大模型",
+  "模型",
+  "智能体",
+  "推理",
+  "上下文",
+  "多模态",
+  "工具调用",
+  "接口",
 ]
 
 [feishu]

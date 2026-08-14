@@ -16,10 +16,91 @@ from signalfeed.config import (
 class ConfigTests(unittest.TestCase):
     def test_repository_config_loads(self) -> None:
         config = load_config(Path(__file__).parents[1] / "config.toml")
+        self.assertEqual(len(config.sources), 14)
         self.assertEqual(config.source.window_size, 20)
+        self.assertEqual(config.sources[1].collector, "markdown_index")
+        self.assertEqual(config.sources[1].transport, "jina")
+        self.assertFalse(config.sources[1].filter)
+        self.assertEqual(config.sources[7].allowed_hosts[-1], "moonshotai.github.io")
         self.assertEqual(config.filter.fields, ("title", "content"))
         self.assertIn("ChatGPT", config.filter.keywords)
+        self.assertIn("智能体", config.filter.keywords)
         self.assertEqual(config.feishu.max_payload_bytes, 28 * 1024)
+
+    def test_legacy_single_source_maps_to_one_rss_article_source(self) -> None:
+        content = """[source]
+name = "OpenAI News"
+url = "https://openai.com/news/rss.xml"
+window_size = 3
+
+[network]
+timeout_seconds = 15
+max_response_bytes = 1000
+user_agent = "test"
+
+[filter]
+fields = ["title"]
+keywords = ["model"]
+
+[feishu]
+max_payload_bytes = 1024
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(content, encoding="utf-8")
+            config = load_config(path)
+
+        self.assertEqual(config.sources, (config.source,))
+        self.assertEqual(config.source.collector, "rss")
+        self.assertEqual(config.source.transport, "direct")
+        self.assertEqual(config.source.content_mode, "article")
+        self.assertEqual(config.source.allowed_hosts, ("openai.com",))
+        self.assertTrue(config.source.filter)
+
+    def test_source_arrays_validate_names_enums_allow_list_and_boolean(self) -> None:
+        repository = (Path(__file__).parents[1] / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        cases = {
+            "duplicate": repository.replace(
+                'name = "OpenAI Developer Blog"', 'name = "openai news"'
+            ),
+            "collector": repository.replace(
+                'collector = "markdown_index"', 'collector = "llm_parser"', 1
+            ),
+            "transport": repository.replace(
+                'transport = "jina"', 'transport = "proxy"', 1
+            ),
+            "content mode": repository.replace(
+                'content_mode = "article"', 'content_mode = "full_page"', 1
+            ),
+            "allow list": repository.replace(
+                'allowed_hosts = ["openai.com"]',
+                'allowed_hosts = ["https://openai.com"]',
+                1,
+            ),
+            "empty hostname label": repository.replace(
+                'allowed_hosts = ["openai.com"]',
+                'allowed_hosts = ["openai.com", "bad..host"]',
+                1,
+            ),
+            "hostname edge hyphen": repository.replace(
+                'allowed_hosts = ["openai.com"]',
+                'allowed_hosts = ["openai.com", "-bad.example"]',
+                1,
+            ),
+            "source host": repository.replace(
+                'allowed_hosts = ["openai.com"]', 'allowed_hosts = ["example.com"]', 1
+            ),
+            "filter": repository.replace("filter = true", 'filter = "true"', 1),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            for name, content in cases.items():
+                with self.subTest(name=name):
+                    path.write_text(content, encoding="utf-8")
+                    with self.assertRaises(ConfigError):
+                        load_config(path)
 
     def test_missing_config_is_a_config_error(self) -> None:
         with self.assertRaises(ConfigError):

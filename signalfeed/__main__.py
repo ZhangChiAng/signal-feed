@@ -23,16 +23,16 @@ from .summarizer import SummaryError
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Collect OpenAI RSS signals for Feishu"
+        description="Collect multi-vendor official AI signals for Feishu"
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--dry-run",
         action="store_true",
-        help="print all planned payload batches without local writes",
+        help="preview baselines and planned per-article messages without local writes",
     )
     mode.add_argument(
-        "--send", action="store_true", help="send all planned Feishu digest batches"
+        "--send", action="store_true", help="send planned articles and failure alerts"
     )
     parser.add_argument("--config", default="config.toml", help="TOML config path")
     parser.add_argument(

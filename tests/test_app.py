@@ -102,7 +102,7 @@ class AppTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Feishu delivery configuration"):
             self.run_app(mode="send", collector_factory=ForbiddenCollector)
 
-    def test_dry_run_generates_chinese_without_feishu_config_or_database_writes(
+    def test_dry_run_previews_baseline_without_feishu_config_or_database_writes(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -119,9 +119,9 @@ class AppTests(unittest.TestCase):
                     notifier_factory=forbidden_notifier,
                 )
                 self.assertEqual(result, 0)
-            self.assertIn('"msg_type":"post"', output.getvalue())
-            self.assertIn("GPT 中文发布", output.getvalue())
-            self.assertEqual(FixedSummarizer.calls, 2)
+            self.assertIn("Baseline preview: OpenAI News: 1 item(s)", output.getvalue())
+            self.assertIn("A GPT release", output.getvalue())
+            self.assertEqual(FixedSummarizer.calls, 0)
             self.assertFalse(path.exists())
             self.assertFalse(path.parent.exists())
 
@@ -149,7 +149,7 @@ class AppTests(unittest.TestCase):
             len(
                 build_digests(
                     [item],
-                    title="2026-08-12 · SignalFeed",
+                    title="2026-08-12 · SignalFeed · OpenAI News",
                     max_payload_bytes=100_000,
                 )[0].encoded
             )
@@ -164,6 +164,8 @@ class AppTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "nested" / "state.sqlite3"
+            SQLiteStorage(path).initialize_source_baseline("OpenAI News", ())
+            before = path.read_bytes()
             output = StringIO()
             self.run_app(
                 config=test_config(limit),
@@ -172,14 +174,19 @@ class AppTests(unittest.TestCase):
                 collector_factory=ThreeCollector,
                 clock=clock,
             )
-            self.assertFalse(path.parent.exists())
+            self.assertEqual(path.read_bytes(), before)
 
-        payloads = [json.loads(line) for line in output.getvalue().splitlines()]
+        payloads = [
+            json.loads(line)
+            for line in output.getvalue().splitlines()
+            if line.startswith("{")
+        ]
         self.assertGreater(len(payloads), 1)
         self.assertEqual(clock_calls, 1)
         self.assertTrue(
             all(
-                payload["content"]["zh_cn"]["title"] == "2026-08-12 · SignalFeed"
+                payload["content"]["zh_cn"]["title"]
+                == "2026-08-12 · SignalFeed · OpenAI News"
                 for payload in payloads
             )
         )
@@ -187,6 +194,7 @@ class AppTests(unittest.TestCase):
     def test_success_is_deduplicated_on_second_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
+            SQLiteStorage(path).initialize_source_baseline("OpenAI News", ())
             sent: list[object] = []
 
             class RecordingNotifier:
@@ -214,6 +222,7 @@ class AppTests(unittest.TestCase):
     def test_failed_send_is_not_delivered_and_reuses_cached_chinese(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
+            SQLiteStorage(path).initialize_source_baseline("OpenAI News", ())
             attempts = 0
 
             class FailingNotifier:
@@ -222,17 +231,18 @@ class AppTests(unittest.TestCase):
 
                 def send(self, digest: object) -> None:
                     nonlocal attempts
-                    attempts += 1
-                    raise NotificationError("rejected")
+                    if digest.items:  # type: ignore[attr-defined]
+                        attempts += 1
+                        raise NotificationError("rejected")
 
             for _ in range(2):
-                with self.assertRaises(NotificationError):
-                    self.run_app(
-                        mode="send",
-                        database_path=path,
-                        feishu_delivery=DELIVERY,
-                        notifier_factory=FailingNotifier,
-                    )
+                result = self.run_app(
+                    mode="send",
+                    database_path=path,
+                    feishu_delivery=DELIVERY,
+                    notifier_factory=FailingNotifier,
+                )
+                self.assertEqual(result, 1)
             self.assertEqual(attempts, 2)
             self.assertEqual(FixedSummarizer.calls, 1)
             self.assertEqual(SQLiteStorage(path).unseen([news_item()]), [news_item()])
@@ -266,7 +276,7 @@ class AppTests(unittest.TestCase):
             len(
                 build_digests(
                     [SUMMARY.apply_to(item)],
-                    title="2026-08-12 · SignalFeed",
+                    title="2026-08-12 · SignalFeed · OpenAI News",
                     max_payload_bytes=100_000,
                 )[0].encoded
             )
@@ -279,22 +289,24 @@ class AppTests(unittest.TestCase):
                 pass
 
             def send(self, digest: object) -> None:
-                attempts.append(tuple(item.item_id for item in digest.items))  # type: ignore[attr-defined]
-                if len(attempts) == 2:
+                item_ids = tuple(item.item_id for item in digest.items)  # type: ignore[attr-defined]
+                attempts.append(item_ids)
+                if item_ids == ("guid-2",) and attempts.count(item_ids) == 1:
                     raise NotificationError("second batch failed")
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
-            with self.assertRaisesRegex(NotificationError, "second batch"):
-                self.run_app(
-                    config=test_config(limit),
-                    mode="send",
-                    database_path=path,
-                    feishu_delivery=DELIVERY,
-                    collector_factory=ThreeCollector,
-                    notifier_factory=FailSecondNotifier,
-                )
-            self.assertEqual(SQLiteStorage(path).unseen(items), items[1:])
+            SQLiteStorage(path).initialize_source_baseline("OpenAI News", ())
+            result = self.run_app(
+                config=test_config(limit),
+                mode="send",
+                database_path=path,
+                feishu_delivery=DELIVERY,
+                collector_factory=ThreeCollector,
+                notifier_factory=FailSecondNotifier,
+            )
+            self.assertEqual(result, 1)
+            self.assertEqual(SQLiteStorage(path).unseen(items), [items[1]])
 
             self.run_app(
                 config=test_config(limit),
@@ -308,11 +320,11 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(
             attempts,
-            [("guid-1",), ("guid-2",), ("guid-2",), ("guid-3",)],
+            [("guid-1",), ("guid-2",), (), ("guid-3",), ("guid-2",)],
         )
         self.assertEqual(FixedSummarizer.calls, 3)
 
-    def test_oversized_later_item_is_rejected_before_any_send(self) -> None:
+    def test_oversized_later_item_does_not_block_an_earlier_send(self) -> None:
         first = news_item()
         second = news_item(
             item_id="guid-large",
@@ -331,7 +343,7 @@ class AppTests(unittest.TestCase):
         limit = len(
             build_digests(
                 [normal],
-                title="2026-08-12 · SignalFeed",
+                title="2026-08-12 · SignalFeed · OpenAI News",
                 max_payload_bytes=100_000,
             )[0].encoded
         )
@@ -348,26 +360,32 @@ class AppTests(unittest.TestCase):
                     )
                 return SUMMARY
 
-        def forbidden_notifier(*args: object) -> object:
-            raise AssertionError("notifier must not be created before preflight")
+        sent: list[tuple[str, ...]] = []
+
+        class RecordingNotifier:
+            def __init__(self, delivery: object, timeout: float) -> None:
+                pass
+
+            def send(self, digest: object) -> None:
+                sent.append(tuple(item.item_id for item in digest.items))  # type: ignore[attr-defined]
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
-            with self.assertRaisesRegex(NotificationError, "guid-large"):
-                self.run_app(
-                    config=test_config(limit),
-                    mode="send",
-                    database_path=path,
-                    feishu_delivery=DELIVERY,
-                    collector_factory=TwoCollector,
-                    summarizer_factory=OversizedSummarizer,
-                    notifier_factory=forbidden_notifier,
-                )
-            self.assertEqual(
-                SQLiteStorage(path).unseen([first, second]), [first, second]
+            SQLiteStorage(path).initialize_source_baseline("OpenAI News", ())
+            result = self.run_app(
+                config=test_config(limit),
+                mode="send",
+                database_path=path,
+                feishu_delivery=DELIVERY,
+                collector_factory=TwoCollector,
+                summarizer_factory=OversizedSummarizer,
+                notifier_factory=RecordingNotifier,
             )
+            self.assertEqual(result, 1)
+            self.assertEqual(SQLiteStorage(path).unseen([first, second]), [second])
+        self.assertEqual(sent, [("guid-1",), ()])
 
-    def test_partial_generation_is_cached_but_round_is_not_sent(self) -> None:
+    def test_partial_generation_is_cached_and_does_not_block_successes(self) -> None:
         first = news_item()
         second = news_item(
             item_id="guid-2", guid="guid-2", url="https://example.com/news/2"
@@ -403,19 +421,17 @@ class AppTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
-            with self.assertRaises(SummaryError):
-                self.run_app(
-                    mode="send",
-                    database_path=path,
-                    feishu_delivery=DELIVERY,
-                    collector_factory=TwoCollector,
-                    summarizer_factory=FlakySummarizer,
-                    notifier_factory=RecordingNotifier,
-                )
-            self.assertEqual(sent, [])
-            self.assertEqual(
-                SQLiteStorage(path).unseen([first, second]), [first, second]
+            SQLiteStorage(path).initialize_source_baseline("OpenAI News", ())
+            result = self.run_app(
+                mode="send",
+                database_path=path,
+                feishu_delivery=DELIVERY,
+                collector_factory=TwoCollector,
+                summarizer_factory=FlakySummarizer,
+                notifier_factory=RecordingNotifier,
             )
+            self.assertEqual(result, 1)
+            self.assertEqual(SQLiteStorage(path).unseen([first, second]), [second])
 
             self.run_app(
                 mode="send",
@@ -426,7 +442,10 @@ class AppTests(unittest.TestCase):
                 notifier_factory=RecordingNotifier,
             )
             self.assertEqual(Counter(calls), Counter({"guid-1": 1, "guid-2": 2}))
-            self.assertEqual(len(sent), 1)
+            self.assertEqual(
+                [tuple(item.item_id for item in digest.items) for digest in sent],
+                [("guid-1",), (), ("guid-2",)],
+            )
 
     def test_model_calls_run_in_parallel_with_a_hard_limit_of_500(self) -> None:
         items = [
@@ -475,13 +494,17 @@ class AppTests(unittest.TestCase):
                 type(self).closed = True
 
         with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            SQLiteStorage(path).initialize_source_baseline("OpenAI News", ())
+            before = path.read_bytes()
             output = StringIO()
             result = self.run_app(
-                database_path=Path(directory) / "state.sqlite3",
+                database_path=path,
                 output=output,
                 collector_factory=ManyCollector,
                 summarizer_factory=CappedSummarizer,
             )
+            self.assertEqual(path.read_bytes(), before)
 
         self.assertEqual(result, 0)
         self.assertEqual(CappedSummarizer.max_active, MAX_MODEL_CONCURRENCY)

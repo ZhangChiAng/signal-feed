@@ -35,6 +35,35 @@ class Digest:
     encoded: bytes
 
 
+def build_failure_digest(
+    *,
+    title: str,
+    source: str,
+    article_title: str,
+    stage: str,
+    max_payload_bytes: int,
+) -> Digest:
+    """Build the small, non-recursive alert sent after an item failure."""
+
+    paragraphs = [
+        [
+            {
+                "tag": "text",
+                "text": (
+                    f"来源：{source[:200]}\n"
+                    f"文章：{article_title[:500]}\n"
+                    f"失败阶段：{stage[:100]}\n"
+                ),
+            }
+        ]
+    ]
+    payload = _payload(title, paragraphs)
+    encoded = encode_payload(payload)
+    if len(encoded) > max_payload_bytes:
+        raise NotificationError("failure alert exceeds the configured payload limit")
+    return Digest(payload=payload, items=(), encoded=encoded)
+
+
 def build_digests(
     items: Sequence[NewsItem],
     *,
@@ -99,13 +128,14 @@ def _payload(
 def _item_paragraphs(item: NewsItem) -> list[list[dict[str, object]]]:
     summary = item.content or "（无摘要）"
     published_at = format_beijing_timestamp(item.published_at)
+    date_label = "北京时间" if "T" in item.published_at else "发布日期"
     return [
         [{"tag": "a", "text": f"{item.title}\n", "href": item.url}],
         [
             {
                 "tag": "text",
                 "text": (
-                    f"来源：{item.source} · 北京时间：{published_at}\n{summary}\n"
+                    f"来源：{item.source} · {date_label}：{published_at}\n{summary}\n"
                 ),
             }
         ],
