@@ -11,7 +11,6 @@ JINA_READER_BASE = "https://r.jina.ai/"
 READER_TIMEOUT_SECONDS = 45.0
 MAX_READER_BYTES = 1024 * 1024
 MAX_READER_TOKENS = 6000
-DEFAULT_ALLOWED_HOSTS = ("openai.com",)
 
 
 class ReaderError(RuntimeError):
@@ -30,19 +29,17 @@ class JinaReader:
     def read(
         self,
         article_url: str,
-        allowed_hosts: Collection[str] | None = None,
+        allowed_hosts: Collection[str],
         *,
         retain_links: bool = False,
     ) -> str:
         """Read an HTTPS page after checking it against a source allowlist.
 
-        Omitting ``allowed_hosts`` preserves the original OpenAI-only behavior.
         Article content drops images and link targets by default. Index callers
         can retain Markdown links while still dropping images.
         """
 
-        hosts = DEFAULT_ALLOWED_HOSTS if allowed_hosts is None else allowed_hosts
-        safe_url = _allowed_article_url(article_url, hosts)
+        safe_url = _allowed_article_url(article_url, allowed_hosts)
         request = Request(
             JINA_READER_BASE + safe_url,
             headers={
@@ -79,9 +76,7 @@ class JinaReader:
         return content
 
 
-def _allowed_article_url(
-    value: str, allowed_hosts: Collection[str] = DEFAULT_ALLOWED_HOSTS
-) -> str:
+def _allowed_article_url(value: str, allowed_hosts: Collection[str]) -> str:
     hosts = _normalize_allowed_hosts(allowed_hosts)
     try:
         parsed = urlsplit(value)
@@ -157,9 +152,3 @@ def _remove_links(markdown: str) -> str:
     text = re.sub(r"<https?://[^>]+>", "", text)
     text = re.sub(r"https?://\S+", "", text)
     return text
-
-
-def _remove_images_and_links(markdown: str) -> str:
-    """Backward-compatible helper for article Markdown cleanup."""
-
-    return _clean_markdown(markdown, retain_links=False)

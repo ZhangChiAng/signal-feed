@@ -34,7 +34,7 @@ chmod 0700 data
 
 `.env`、`models.toml` 与 `data/` 均被 Git 忽略。日常 CD 不运行 `git clean`，不会删除这些服务器本地文件。建议确认数据库环境变量使用 `data/` 下的路径；默认值 `data/signalfeed.sqlite3` 已满足要求。
 
-仓库的 `config.toml` 使用有序 `[[sources]]` 配置。部署前应确认每项都有稳定且唯一的 `name`，以及与入口匹配的 `collector`、`transport`、`content_mode` 和 `allowed_hosts`。信源名称也是 SQLite 持久化标识；建立基线后不应仅为显示效果改名，否则会被视为新信源。从旧版升级时可继续读取 `[source]`，但建议在上线前切换到仓库提供的完整多信源配置。
+仓库的 `config.toml` 使用有序 `[[sources]]` 配置。部署前应确认每项都有稳定且唯一的 `name`，以及与入口匹配的 `collector`、`transport`、`content_mode` 和 `allowed_hosts`。信源名称也是 SQLite 持久化标识；建立基线后不应仅为显示效果改名，否则会被视为新信源。
 
 先以部署账户执行安全预览：
 
@@ -89,7 +89,7 @@ sudo systemctl status signalfeed.service --no-pager
 sudo journalctl -u signalfeed.service --since today --no-pager
 ```
 
-检查日志中每个预期信源都出现 `Baseline created`，汇总的基线条目总数符合各来源窗口，且失败数为零。同一轮中一个信源失败不会回滚其他信源已成功的基线；未建立基线的信源会在下次成功采集时重试。从旧数据库升级时，已有送达记录的 `OpenAI News` 会自动视为已初始化，其他新信源仍只建立基线。
+检查日志中每个预期信源都出现 `Baseline created`，汇总的基线条目总数符合各来源窗口，且失败数为零。同一轮中一个信源失败不会回滚其他信源已成功的基线；未建立基线的信源会在下次成功采集时重试。
 
 确认日志无凭据后再启用 timer：
 

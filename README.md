@@ -45,7 +45,7 @@ install -m 0600 .env.example .env
 
 信源、检查窗口、网络限制、匹配字段、关键词和飞书消息大小位于 `config.toml`。每个 `[[sources]]` 都包含稳定唯一的 `name`、`url`、`collector`、`transport`、`content_mode`、`window_size`、`allowed_hosts` 和布尔 `filter`。`filter = true` 才应用全局 `[filter]`；匹配忽略大小写，并为英文关键词使用 ASCII 单词边界。支持的 Collector 固定为 `rss`、`markdown_index`、`markdown_changelog`、`markdown_cards` 和 `next_data_index`，列表解析不使用 LLM。
 
-旧 `[source]` 配置仍会映射为单个 RSS 原文来源。信源名称同时是 SQLite 持久化身份，建立状态后不要随意改名；原有 `OpenAI News` 名称和送达记录继续生效。完整的 14 个入口与字段约束见[多信源技术规格](docs/multi-source-specification.md)。
+信源名称同时是 SQLite 持久化身份，建立状态后不要随意改名。完整的 14 个入口与字段约束见[多信源技术规格](docs/multi-source-specification.md)。
 
 ## 安全预览
 
@@ -79,7 +79,7 @@ Feed 中的完整发布时间会转换为北京时间；页面只提供日期或
 uv run --locked python -m signalfeed --send
 ```
 
-`--send` 会在采集前完整校验四项飞书环境变量，缺失或接收者类型非法时立即失败。SDK 使用 App ID/App Secret 获取并管理 `tenant_access_token`。空数据库首次运行时，所有成功采集的来源只在 SQLite 中建立窗口基线，不补发历史内容；以后新增的来源也各自原子建立基线。旧数据库若已有 `OpenAI News` 送达记录，会自动把该来源视为已初始化。
+`--send` 会在采集前完整校验四项飞书环境变量，缺失或接收者类型非法时立即失败。SDK 使用 App ID/App Secret 获取并管理 `tenant_access_token`。空数据库首次运行时，所有成功采集的来源只在 SQLite 中建立窗口基线，不补发历史内容；以后新增的来源也各自原子建立基线。
 
 每篇新增文章依次完成正文取得、中文摘要、单篇消息构建、发送和送达记账。摘要成功后立即缓存；消息必须完整装入默认 28 KiB 上限，为飞书 30 KiB 富文本限制保留约 2 KiB OpenAPI 封装余量；发送成功后立即记录该篇送达。正文、摘要、超大消息、构建或发送失败都只影响当前文章，失败项保留下轮重试，后续文章继续处理。
 

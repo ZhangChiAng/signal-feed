@@ -37,7 +37,7 @@ DELIVERY = FeishuDeliveryConfig("cli_test", "app-secret", "chat_id", "oc_private
 
 def test_config(max_payload_bytes: int = 28 * 1024) -> AppConfig:
     return AppConfig(
-        source=SourceConfig("OpenAI News", "https://example.com/rss", 20),
+        (SourceConfig("OpenAI News", "https://example.com/rss", ("example.com",)),),
         network=NetworkConfig(15, 5 * 1024 * 1024, "test"),
         filter=FilterConfig(("title", "content"), ("GPT",)),
         feishu=FeishuConfig(max_payload_bytes),
@@ -58,7 +58,7 @@ class FixedReader:
     def __init__(self, user_agent: str) -> None:
         pass
 
-    def read(self, url: str) -> str:
+    def read(self, url: str, *, allowed_hosts: tuple[str, ...] = ()) -> str:
         type(self).calls += 1
         return "Full article body"
 

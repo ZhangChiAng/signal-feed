@@ -702,24 +702,9 @@ def _ordered_failure_stages(
 
 
 def _read_article(reader: object, url: str, allowed_hosts: tuple[str, ...]) -> str:
-    try:
-        parameters = inspect.signature(reader.read).parameters  # type: ignore[attr-defined]
-    except TypeError, ValueError:
-        parameters = None
-    supports_allowlist = (
-        parameters is None
-        or "allowed_hosts" in parameters
-        or any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in (parameters or {}).values()
-        )
+    return reader.read(  # type: ignore[attr-defined,no-any-return]
+        url, allowed_hosts=allowed_hosts
     )
-    if supports_allowlist:
-        return reader.read(  # type: ignore[attr-defined,no-any-return]
-            url, allowed_hosts=allowed_hosts
-        )
-    # Preserve the simple ``read(url)`` seam used by existing integrations.
-    return reader.read(url)  # type: ignore[attr-defined,no-any-return]
 
 
 async def _generate_summaries(

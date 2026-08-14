@@ -10,6 +10,11 @@ from .config import ModelConfig
 from .model import ChineseSummary, NewsItem, canonicalize_url
 from .summarizer import SummaryError, parse_summary
 
+
+class StorageError(RuntimeError):
+    """Raised when the SQLite database has an unsupported legacy schema."""
+
+
 SOURCE_FAILURE_ITEM_KEY = "__source__"
 STATE_FAILURE_ITEM_KEY = "__state__"
 BASELINE_FAILURE_ITEM_KEY = "__baseline__"
@@ -81,7 +86,7 @@ class SQLiteStorage:
         self.path = Path(path)
 
     def initialize(self) -> None:
-        """Create or transactionally migrate every state table."""
+        """Create every state table, failing fast on a legacy schema."""
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as connection:
@@ -102,19 +107,6 @@ class SQLiteStorage:
                     """
                     CREATE INDEX IF NOT EXISTS baseline_items_dedupe_key_idx
                     ON baseline_items (dedupe_key)
-                    """
-                )
-                # A deployed single-source database predates source_state.  Any
-                # successful OpenAI delivery proves that its historical window
-                # was already processed, so it must not be baselined again.
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO source_state (source)
-                    SELECT 'OpenAI News'
-                    WHERE EXISTS (
-                        SELECT 1 FROM delivered_items
-                        WHERE source = 'OpenAI News'
-                    )
                     """
                 )
             except BaseException:
@@ -232,9 +224,7 @@ class SQLiteStorage:
                 ).fetchone()
                 if row is not None:
                     return True
-            # Preserve the same behavior in a read-only dry-run against an old
-            # database that cannot be migrated in place.
-            return source == "OpenAI News" and _old_openai_delivery_exists(connection)
+            return False
         finally:
             connection.close()
 
@@ -475,34 +465,6 @@ class SQLiteStorage:
                 _cache_key(item, model, prompt_version),
             ).fetchone()
             if row is None:
-                # Read caches created before dedupe_key became the stable item
-                # identity.  This preserves prior summaries while allowing a
-                # tracking-only URL or feed-ID change to reuse them.
-                legacy_rows = connection.execute(
-                    """
-                    SELECT item_id, item_url, title_zh, bullets_zh_json
-                    FROM chinese_summary_cache
-                    WHERE source = ? AND model = ? AND protocol = ?
-                      AND base_url = ? AND api_key_env = ? AND prompt_version = ?
-                    """,
-                    (
-                        item.source,
-                        model.model,
-                        model.protocol,
-                        model.base_url,
-                        model.api_key_env,
-                        prompt_version,
-                    ),
-                )
-                for stored_id, stored_url, title, bullets in legacy_rows:
-                    if (
-                        item.dedupe_key.startswith("changelog:")
-                        and stored_id == item.dedupe_key
-                        or canonicalize_url(stored_url) == item.dedupe_key
-                    ):
-                        row = (title, bullets)
-                        break
-            if row is None:
                 return None
             try:
                 return parse_summary(
@@ -546,52 +508,14 @@ class SQLiteStorage:
 
         columns = _table_columns(connection, "delivered_items")
         if "delivery_id" not in columns or "dedupe_key" not in columns:
-            # SQLite cannot drop an inline UNIQUE constraint.  Rebuild inside
-            # the initialize() transaction so rolling changelogs may persist
-            # multiple entries that intentionally share their page URL.
-            connection.execute("DROP TABLE IF EXISTS delivered_items_migrating")
-            connection.execute(
-                DELIVERED_SCHEMA.replace("delivered_items", "delivered_items_migrating")
+            raise StorageError(
+                "delivered_items has a legacy schema; run a current release once "
+                "to migrate it before removing migration support"
             )
-            selected_columns = "source, item_id, url, delivered_at"
-            if "dedupe_key" in columns:
-                selected_columns += ", dedupe_key"
-            rows = connection.execute(
-                f"SELECT {selected_columns} FROM delivered_items"
-            ).fetchall()
-            migrated = []
-            for row in rows:
-                source, item_id, url, delivered_at, *existing_key = row
-                dedupe_key = existing_key[0] if existing_key else None
-                migrated.append(
-                    (
-                        source,
-                        item_id,
-                        url,
-                        dedupe_key or canonicalize_url(url),
-                        delivered_at,
-                    )
-                )
-            connection.executemany(
-                """
-                INSERT INTO delivered_items_migrating
-                    (source, item_id, url, dedupe_key, delivered_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                migrated,
-            )
-            connection.execute("DROP TABLE delivered_items")
-            connection.execute(
-                "ALTER TABLE delivered_items_migrating RENAME TO delivered_items"
-            )
-        else:
-            rows = connection.execute(
-                "SELECT rowid, url FROM delivered_items WHERE dedupe_key IS NULL"
-            ).fetchall()
-            connection.executemany(
-                "UPDATE delivered_items SET dedupe_key = ? WHERE rowid = ?",
-                ((canonicalize_url(url), rowid) for rowid, url in rows),
-            )
+        if connection.execute(
+            "SELECT 1 FROM delivered_items WHERE dedupe_key IS NULL LIMIT 1"
+        ).fetchone():
+            raise StorageError("delivered_items contains rows with a NULL dedupe_key")
 
     def _open_for_read(self, read_only: bool) -> sqlite3.Connection | None:
         if read_only:
@@ -624,18 +548,14 @@ def _delivered_state(
 ) -> tuple[set[str], set[tuple[str, str]], set[tuple[str, str]]]:
     if not _table_exists(connection, "delivered_items"):
         return set(), set(), set()
-    columns = _table_columns(connection, "delivered_items")
-    select = "source, item_id, url"
-    if "dedupe_key" in columns:
-        select += ", dedupe_key"
-    rows = connection.execute(f"SELECT {select} FROM delivered_items").fetchall()
+    rows = connection.execute(
+        "SELECT source, item_id, url, dedupe_key FROM delivered_items"
+    ).fetchall()
     keys: set[str] = set()
     ids: set[tuple[str, str]] = set()
     urls: set[tuple[str, str]] = set()
-    for source, item_id, url, *stored_key in rows:
-        keys.add(
-            stored_key[0] if stored_key and stored_key[0] else canonicalize_url(url)
-        )
+    for source, item_id, url, dedupe_key in rows:
+        keys.add(dedupe_key)
         ids.add((source, item_id))
         urls.add((source, url))
     return keys, ids, urls
@@ -647,20 +567,6 @@ def _baseline_keys(connection: sqlite3.Connection) -> set[str]:
     return {
         row[0] for row in connection.execute("SELECT dedupe_key FROM baseline_items")
     }
-
-
-def _old_openai_delivery_exists(connection: sqlite3.Connection) -> bool:
-    if not _table_exists(connection, "delivered_items"):
-        return False
-    return (
-        connection.execute(
-            """
-            SELECT 1 FROM delivered_items
-            WHERE source = 'OpenAI News' LIMIT 1
-            """
-        ).fetchone()
-        is not None
-    )
 
 
 def _deduplicate_batch(items: list[NewsItem]) -> list[NewsItem]:

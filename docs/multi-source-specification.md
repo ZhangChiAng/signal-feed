@@ -32,7 +32,7 @@
 | `MiniMax Model Releases` | `https://platform.minimax.io/docs/release-notes/models` | `markdown_cards` / direct | `article` |
 | `MiniMax API Releases` | `https://platform.minimax.io/docs/release-notes/apis` | `markdown_changelog` / direct | `inline` |
 
-信源名称是数据库中的持久化身份，不是展示用别名。上线并建立状态后不得随意改名；`OpenAI News` 必须保持原名称，以便旧数据库无损延续送达记录。
+信源名称是数据库中的持久化身份，不是展示用别名。上线并建立状态后不得随意改名。
 
 Kimi 官方页面中发现的官方 GitHub 或 Hugging Face 项目链接可以成为该条文章的正文目标，但不会触发对 GitHub 或 Hugging Face 的主动发现，也不会把两个站点扩展成新的全站信源。
 
@@ -65,10 +65,6 @@ filter = false
 | `allowed_hosts` | 非空域名白名单，用于正文目标校验 |
 | `filter` | `true` 时应用全局 `[filter]`；`false` 时全部接收 |
 
-旧 `[source]` 配置继续兼容，并映射为单个 `rss`、`direct`、`article` 来源。它保持旧的 OpenAI 正文域名限制和全局过滤行为，便于现有私有部署逐步迁移。
-
-一般 News 和开放平台 Blog 使用全局关键词过滤；Developer Blog、Engineering、Research、模型发布和 API/平台发布记录已经由官方策展，全部接收。全局词表同时包含 Claude、Anthropic、DeepSeek、Kimi、GLM、MiniMax，以及模型、智能体、推理、上下文等中英文关键词；英文匹配继续使用 ASCII 单词边界并忽略大小写。
-
 ## 4. 采集契约
 
 五种 Collector 通过注册表按配置枚举选择，统一返回：
@@ -88,12 +84,11 @@ CollectionBatch(items, issues)
 
 ## 5. Jina Reader 与域名边界
 
-Jina 请求按当前信源显式传入 `allowed_hosts`。目标 URL 必须使用 HTTPS、不得带用户名或密码，主机必须精确匹配白名单项或是其子域；`anthropic.com.evil.example` 之类的后缀伪装不会通过。
+Jina 请求必须按当前信源显式传入 `allowed_hosts`。目标 URL 须使用 HTTPS、不得带用户名或密码，主机必须精确匹配白名单项或是其子域；`anthropic.com.evil.example` 之类的后缀伪装不会通过。
 
 - Jina 列表页保留 Markdown 链接并移除图片，供确定性 Collector 发现文章目标；
 - 文章正文移除图片、裸 URL 和 Markdown 链接目标，只保留可摘要的正文与锚文本；
-- 客户端继续使用 45 秒超时、1 MiB 响应上限和 6000 tokens 上限；
-- 未显式传入白名单的旧调用仍默认只允许 `openai.com` 及其子域。
+- 客户端继续使用 45 秒超时、1 MiB 响应上限和 6000 tokens 上限。
 
 `transport` 只约束入口下载方式；`content_mode=article` 的目标正文仍走受限 Reader，`inline` 条目不进行第二次正文抓取。
 
@@ -109,9 +104,9 @@ Jina 请求按当前信源显式传入 `allowed_hosts`。目标 URL 必须使用
 
 来源之间按配置顺序处理，来源内维持官方列表顺序。摘要任务可以并行，但结果必须恢复为上述顺序后逐篇发送。
 
-## 7. 首次基线与 SQLite 升级
+## 7. 首次基线与 SQLite 状态表
 
-SQLite 在现有 `delivered_items` 和中文摘要缓存之外增加三组状态：
+SQLite 在 `delivered_items` 和中文摘要缓存之外维护三组状态：
 
 | 表 | 用途 |
 | --- | --- |
@@ -119,13 +114,14 @@ SQLite 在现有 `delivered_items` 和中文摘要缓存之外增加三组状态
 | `baseline_items` | 保存首次窗口中的全部条目，不只保存过滤后条目 |
 | `active_failures` | 保存已经成功告警、但对应来源或文章尚未恢复的故障 |
 
+`delivered_items` 必须包含 `delivery_id` 和 `dedupe_key` 列且无空值；缺失该结构的旧库会在 `initialize()` 时立即失败，需先用当前版本运行一次以迁移，移除迁移支持后不再原地升级。
+
 规则如下：
 
 1. 空数据库首次运行时，所有来源只建立基线，不发送历史内容；
 2. 新增来源首次成功采集时，在一个事务中写入该来源窗口内全部条目并标记初始化；任一步失败都不留下半份基线；
-3. 旧数据库只要已有 `OpenAI News` 的 `delivered_items`，该来源自动视为已初始化，原有去重继续生效；
-4. 其他来源各自独立建基线，一个来源失败不影响成功来源提交基线；
-5. dry-run 只输出基线预览和计数，不创建数据库、目录、表或任何记录。
+3. 各来源独立建基线，一个来源失败不影响成功来源提交基线；
+4. dry-run 只输出基线预览和计数，不创建数据库、目录、表或任何记录。
 
 建立基线后，只处理不在基线和送达记录中的新 `dedupe_key`；失败文章不会记为已送达，因此下轮仍可重试。
 
@@ -175,8 +171,8 @@ SQLite 在现有 `delivered_items` 和中文摘要缓存之外增加三组状态
 自动化测试至少覆盖：
 
 - 五种 Collector 的固定官方响应夹具、日期精度、窗口、重复链接、坏条目和响应超限；
-- `[[sources]]`、唯一名称、枚举值、白名单、旧 `[source]` 兼容和中英文过滤；
-- 跨来源规范化 URL 去重、同页多条 Changelog、旧 SQLite 无损升级、原子基线和 dry-run 零写入；
+- `[[sources]]`、唯一名称、枚举值、白名单、`[source]` 旧表被拒和中英文过滤；
+- 跨来源规范化 URL 去重、同页多条 Changelog、旧 SQLite schema 立即失败、原子基线和 dry-run 零写入；
 - 正文、摘要、超大消息和发送失败的逐篇隔离，以及成功项立即缓存和记账；
 - 首次告警、重复静默、恢复后再告警，以及告警发送失败后的下轮重试；
 - 每篇一条消息、完整中文标题、3–5 条要点、顺序发送和最终退出码。

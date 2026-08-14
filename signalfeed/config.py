@@ -16,11 +16,11 @@ class ConfigError(ValueError):
 class SourceConfig:
     name: str
     url: str
+    allowed_hosts: tuple[str, ...]
     window_size: int = 20
     collector: str = "rss"
     transport: str = "direct"
     content_mode: str = "article"
-    allowed_hosts: tuple[str, ...] = ()
     filter: bool = True
 
     def __post_init__(self) -> None:
@@ -28,6 +28,7 @@ class SourceConfig:
 
         name = _nonempty_string(self.name, "sources.name")
         url = _source_url(self.url, "sources.url")
+        allowed_hosts = _host_tuple(self.allowed_hosts, "sources.allowed_hosts")
         window_size = _positive_int(self.window_size, "sources.window_size")
         collector = _enum_value(
             self.collector,
@@ -46,17 +47,6 @@ class SourceConfig:
         )
         if not isinstance(self.filter, bool):
             raise ConfigError("sources.filter must be a boolean")
-
-        if self.allowed_hosts:
-            allowed_hosts = _host_tuple(self.allowed_hosts, "sources.allowed_hosts")
-        else:
-            # Programmatic three-argument construction was the public API before
-            # multi-source support.  Deriving its single host preserves that API;
-            # new TOML entries are still required to declare the allow-list.
-            host = urlsplit(url).hostname
-            if host is None:  # pragma: no cover - guarded by _source_url
-                raise ConfigError("sources.url must contain a host")
-            allowed_hosts = (host.lower(),)
 
         source_host = urlsplit(url).hostname
         if source_host is None or not _host_is_allowed(source_host, allowed_hosts):
@@ -106,42 +96,25 @@ class AppConfig:
 
     def __init__(
         self,
-        sources: tuple[SourceConfig, ...] | SourceConfig | None = None,
-        network: NetworkConfig | None = None,
-        filter: FilterConfig | None = None,
-        feishu: FeishuConfig | None = None,
-        *,
-        source: SourceConfig | None = None,
+        sources: tuple[SourceConfig, ...],
+        network: NetworkConfig,
+        filter: FilterConfig,
+        feishu: FeishuConfig,
     ) -> None:
-        """Build an application config, accepting the legacy ``source=`` alias."""
+        """Build an application config from a non-empty source tuple."""
 
-        if source is not None:
-            if sources is not None:
-                raise ConfigError("configure either source or sources, not both")
-            normalized_sources = (source,)
-        elif isinstance(sources, SourceConfig):
-            # Also preserve the old positional AppConfig(source, ...) spelling.
-            normalized_sources = (sources,)
-        elif isinstance(sources, tuple) and sources:
-            normalized_sources = sources
-        else:
+        if not isinstance(sources, tuple) or not sources:
             raise ConfigError("sources must contain at least one source")
-        if not all(isinstance(entry, SourceConfig) for entry in normalized_sources):
+        if not all(isinstance(entry, SourceConfig) for entry in sources):
             raise ConfigError("sources must contain only SourceConfig values")
         if network is None or filter is None or feishu is None:
             raise ConfigError("network, filter, and feishu configurations are required")
 
-        _validate_unique_source_names(normalized_sources)
-        object.__setattr__(self, "sources", normalized_sources)
+        _validate_unique_source_names(sources)
+        object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "network", network)
         object.__setattr__(self, "filter", filter)
         object.__setattr__(self, "feishu", feishu)
-
-    @property
-    def source(self) -> SourceConfig:
-        """The first source, retained for callers migrating from single-source."""
-
-        return self.sources[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +157,8 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         if unsupported:
             names = ", ".join(sorted(unsupported))
             raise ConfigError(f"filter.fields contains unsupported values: {names}")
+        if set(feishu_raw) != {"max_payload_bytes"}:
+            raise ConfigError("feishu must contain only max_payload_bytes")
         filter_config = FilterConfig(
             fields=fields,
             keywords=_string_tuple(filter_raw["keywords"], "filter.keywords"),
@@ -317,28 +292,12 @@ def resolve_feishu_delivery(
 
 
 def _load_sources(raw: dict[str, object]) -> tuple[SourceConfig, ...]:
-    has_legacy = "source" in raw
-    has_array = "sources" in raw
-    if has_legacy == has_array:
-        if has_legacy:
-            raise ConfigError("configure either [source] or [[sources]], not both")
+    if "source" in raw:
+        raise ConfigError(
+            "the legacy [source] table is no longer supported; use [[sources]]"
+        )
+    if "sources" not in raw:
         raise ConfigError("missing config key: sources")
-
-    if has_legacy:
-        source_raw = raw["source"]
-        if not isinstance(source_raw, dict):
-            raise ConfigError("invalid config structure: source must be a table")
-        try:
-            source = SourceConfig(
-                name=_nonempty_string(source_raw["name"], "source.name"),
-                url=_source_url(source_raw["url"], "source.url"),
-                window_size=_positive_int(
-                    source_raw.get("window_size", 20), "source.window_size"
-                ),
-            )
-        except KeyError as exc:
-            raise ConfigError(f"missing config key: source.{exc.args[0]}") from exc
-        return (source,)
 
     source_array = raw["sources"]
     if not isinstance(source_array, list) or not source_array:

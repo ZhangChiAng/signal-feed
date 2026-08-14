@@ -10,6 +10,7 @@ from signalfeed.storage import (
     BASELINE_FAILURE_ITEM_KEY,
     SOURCE_FAILURE_ITEM_KEY,
     SQLiteStorage,
+    StorageError,
 )
 from tests.helpers import news_item
 
@@ -126,7 +127,7 @@ class StorageTests(unittest.TestCase):
             self.assertIsNone(result)
             self.assertFalse(path.parent.exists())
 
-    def test_legacy_raw_url_cache_is_reused_by_canonical_dedupe_key(self) -> None:
+    def test_summary_cache_is_keyed_by_dedupe_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "feed.sqlite3"
             storage = SQLiteStorage(path)
@@ -135,29 +136,9 @@ class StorageTests(unittest.TestCase):
                 url="https://example.com/news/1?utm_source=old#section"
             )
             summary = ChineseSummary(
-                "旧缓存中文标题", ("第一条要点", "第二条要点", "第三条要点")
+                "中文标题", ("第一条要点", "第二条要点", "第三条要点")
             )
-            with closing(sqlite3.connect(path)) as connection, connection:
-                connection.execute(
-                    """
-                    INSERT INTO chinese_summary_cache (
-                        source, item_id, item_url, model, protocol, base_url,
-                        api_key_env, prompt_version, title_zh, bullets_zh_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        original.source,
-                        original.item_id,
-                        original.url,
-                        self.model.model,
-                        self.model.protocol,
-                        self.model.base_url,
-                        self.model.api_key_env,
-                        "prompt-v1",
-                        summary.title_zh,
-                        '["第一条要点", "第二条要点", "第三条要点"]',
-                    ),
-                )
+            storage.cache_summary(original, self.model, "prompt-v1", summary)
 
             retry = news_item(
                 item_id="changed-feed-id",
@@ -293,7 +274,7 @@ class StorageTests(unittest.TestCase):
 
             self.assertFalse(path.exists())
 
-    def test_old_database_migrates_without_losing_delivery_or_timestamp(self) -> None:
+    def test_legacy_delivered_items_schema_fails_fast(self) -> None:
         old_schema = """
         CREATE TABLE delivered_items (
             source TEXT NOT NULL,
@@ -317,104 +298,24 @@ class StorageTests(unittest.TestCase):
                     (
                         "OpenAI News",
                         "old-guid",
-                        "https://EXAMPLE.com/old?utm_source=rss#section",
+                        "https://example.com/old",
                         "2025-01-02T03:04:05Z",
                     ),
                 )
 
-            storage = SQLiteStorage(path)
-            storage.initialize()
-
-            with closing(sqlite3.connect(path)) as connection, connection:
-                row = connection.execute(
-                    """
-                    SELECT source, item_id, url, dedupe_key, delivered_at
-                    FROM delivered_items
-                    """
-                ).fetchone()
-                table_names = {
+            with self.assertRaises(StorageError):
+                SQLiteStorage(path).initialize()
+            with closing(sqlite3.connect(path)) as connection:
+                tables = {
                     value[0]
                     for value in connection.execute(
                         "SELECT name FROM sqlite_master WHERE type = 'table'"
                     )
                 }
-                unique_indexes = [
-                    index
-                    for index in connection.execute(
-                        "PRAGMA index_list(delivered_items)"
-                    )
-                    if index[2]
-                ]
-            self.assertEqual(
-                row,
-                (
-                    "OpenAI News",
-                    "old-guid",
-                    "https://EXAMPLE.com/old?utm_source=rss#section",
-                    "https://example.com/old",
-                    "2025-01-02T03:04:05Z",
-                ),
-            )
-            self.assertTrue(
-                {"source_state", "baseline_items", "active_failures"} <= table_names
-            )
-            self.assertEqual(unique_indexes, [])
-            self.assertTrue(storage.is_source_initialized("OpenAI News"))
-            self.assertTrue(
-                storage.is_delivered(
-                    news_item(
-                        source="Other Source",
-                        item_id="new-id",
-                        guid="new-id",
-                        url="https://example.com/old",
-                    ),
-                    read_only=True,
-                )
-            )
-
-    def test_read_only_old_database_uses_delivery_as_openai_state_without_migration(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "feed.sqlite3"
-            with closing(sqlite3.connect(path)) as connection, connection:
-                connection.execute(
-                    """
-                    CREATE TABLE delivered_items (
-                        source TEXT NOT NULL,
-                        item_id TEXT NOT NULL,
-                        url TEXT NOT NULL,
-                        delivered_at TEXT NOT NULL,
-                        PRIMARY KEY (source, item_id),
-                        UNIQUE (source, url)
-                    )
-                    """
-                )
-                connection.execute(
-                    """
-                    INSERT INTO delivered_items
-                        (source, item_id, url, delivered_at)
-                    VALUES ('OpenAI News', 'old', 'https://example.com/old', 'old')
-                    """
-                )
-            before = path.read_bytes()
-
-            storage = SQLiteStorage(path)
-            self.assertTrue(
-                storage.is_source_initialized("OpenAI News", read_only=True)
-            )
+            self.assertNotIn("source_state", tables)
             self.assertFalse(
-                storage.is_source_initialized("Anthropic Newsroom", read_only=True)
+                SQLiteStorage(path).is_source_initialized("OpenAI News", read_only=True)
             )
-            self.assertEqual(
-                storage.baseline_items("OpenAI News", read_only=True), set()
-            )
-            self.assertFalse(
-                storage.has_active_failure(
-                    "OpenAI News", SOURCE_FAILURE_ITEM_KEY, read_only=True
-                )
-            )
-            self.assertEqual(path.read_bytes(), before)
 
     def test_all_read_only_state_queries_leave_missing_database_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

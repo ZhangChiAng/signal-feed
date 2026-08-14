@@ -113,7 +113,9 @@ NEXT_DATA = b"""<!doctype html><html><body>
 
 class CollectorTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.source = SourceConfig("OpenAI News", "https://example.com/rss", 20)
+        self.source = SourceConfig(
+            "OpenAI News", "https://example.com/rss", ("example.com",), 20
+        )
         self.network = NetworkConfig(15.0, 5 * 1024 * 1024, "SignalFeed/Test")
 
     def test_maps_rss_cleans_html_normalizes_time_and_skips_bad_item(self) -> None:
@@ -156,7 +158,7 @@ class CollectorTests(unittest.TestCase):
 
     def test_limits_feed_order_before_mapping(self) -> None:
         collector = RSSCollector(
-            SourceConfig("Source", "https://example.com/rss", 1),
+            SourceConfig("Source", "https://example.com/rss", ("example.com",), 1),
             self.network,
             lambda request, timeout: FakeResponse(RSS),
         )
@@ -588,7 +590,7 @@ Valid later card.
                 "next_data_index",
             },
         )
-        source = SourceConfig("RSS", "https://example.com/rss")
+        source = SourceConfig("RSS", "https://example.com/rss", ("example.com",))
         batch = collect_source(
             source,
             self.network,

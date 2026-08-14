@@ -17,7 +17,7 @@ class ConfigTests(unittest.TestCase):
     def test_repository_config_loads(self) -> None:
         config = load_config(Path(__file__).parents[1] / "config.toml")
         self.assertEqual(len(config.sources), 14)
-        self.assertEqual(config.source.window_size, 20)
+        self.assertEqual(config.sources[0].window_size, 20)
         self.assertEqual(config.sources[1].collector, "markdown_index")
         self.assertEqual(config.sources[1].transport, "jina")
         self.assertFalse(config.sources[1].filter)
@@ -26,36 +26,6 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("ChatGPT", config.filter.keywords)
         self.assertIn("智能体", config.filter.keywords)
         self.assertEqual(config.feishu.max_payload_bytes, 28 * 1024)
-
-    def test_legacy_single_source_maps_to_one_rss_article_source(self) -> None:
-        content = """[source]
-name = "OpenAI News"
-url = "https://openai.com/news/rss.xml"
-window_size = 3
-
-[network]
-timeout_seconds = 15
-max_response_bytes = 1000
-user_agent = "test"
-
-[filter]
-fields = ["title"]
-keywords = ["model"]
-
-[feishu]
-max_payload_bytes = 1024
-"""
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.toml"
-            path.write_text(content, encoding="utf-8")
-            config = load_config(path)
-
-        self.assertEqual(config.sources, (config.source,))
-        self.assertEqual(config.source.collector, "rss")
-        self.assertEqual(config.source.transport, "direct")
-        self.assertEqual(config.source.content_mode, "article")
-        self.assertEqual(config.source.allowed_hosts, ("openai.com",))
-        self.assertTrue(config.source.filter)
 
     def test_source_arrays_validate_names_enums_allow_list_and_boolean(self) -> None:
         repository = (Path(__file__).parents[1] / "config.toml").read_text(
@@ -106,7 +76,7 @@ max_payload_bytes = 1024
         with self.assertRaises(ConfigError):
             load_config("definitely-missing.toml")
 
-    def test_legacy_feishu_fields_are_accepted_but_ignored(self) -> None:
+    def test_feishu_rejects_unknown_fields(self) -> None:
         repository_config = Path(__file__).parents[1] / "config.toml"
         content = repository_config.read_text(encoding="utf-8").replace(
             "max_payload_bytes = 28672",
@@ -115,9 +85,31 @@ max_payload_bytes = 1024
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             path.write_text(content, encoding="utf-8")
-            config = load_config(path)
+            with self.assertRaises(ConfigError):
+                load_config(path)
 
-        self.assertEqual(config.feishu.max_payload_bytes, 1024)
+    def test_legacy_source_table_is_rejected(self) -> None:
+        content = """[source]
+name = "OpenAI News"
+url = "https://openai.com/news/rss.xml"
+
+[network]
+timeout_seconds = 15
+max_response_bytes = 1000
+user_agent = "test"
+
+[filter]
+fields = ["title"]
+keywords = ["model"]
+
+[feishu]
+max_payload_bytes = 1024
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(content, encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, r"\[source\]"):
+                load_config(path)
 
     def test_example_model_config_is_strict_and_loadable(self) -> None:
         config = load_models_config(Path(__file__).parents[1] / "models.example.toml")

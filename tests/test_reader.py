@@ -65,12 +65,6 @@ URL Source: https://openai.com/test
             ],
         )
 
-    def test_default_allowlist_preserves_openai_only_compatibility(self) -> None:
-        reader = JinaReader("test", lambda request, timeout: FakeResponse(b"article"))
-        self.assertEqual(reader.read("https://openai.com/test"), "article")
-        with self.assertRaises(ReaderError):
-            reader.read("https://anthropic.com/test")
-
     def test_rejects_urls_outside_the_source_allowlist(self) -> None:
         forbidden = [
             "http://anthropic.com/test",
@@ -131,13 +125,15 @@ URL Source: https://www.anthropic.com/news
             JinaReader(
                 "test",
                 lambda request, timeout: FakeResponse(b"x" * (MAX_READER_BYTES + 1)),
-            ).read("https://openai.com/test")
+            ).read("https://openai.com/test", allowed_hosts=("openai.com",))
 
         def failing_opener(request: object, *, timeout: float) -> FakeResponse:
             raise HTTPError("https://r.jina.ai/secret-token", 500, "bad", {}, None)
 
         with self.assertRaises(ReaderError) as raised:
-            JinaReader("test", failing_opener).read("https://openai.com/test")
+            JinaReader("test", failing_opener).read(
+                "https://openai.com/test", allowed_hosts=("openai.com",)
+            )
         self.assertNotIn("secret-token", str(raised.exception))
 
 
