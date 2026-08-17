@@ -22,6 +22,7 @@ class SourceConfig:
     transport: str = "direct"
     content_mode: str = "article"
     filter: bool = True
+    max_age_days: int | None = None
 
     def __post_init__(self) -> None:
         """Validate programmatic construction as strictly as TOML loading."""
@@ -47,6 +48,9 @@ class SourceConfig:
         )
         if not isinstance(self.filter, bool):
             raise ConfigError("sources.filter must be a boolean")
+        if self.max_age_days is not None:
+            max_age_days = _positive_int(self.max_age_days, "sources.max_age_days")
+            object.__setattr__(self, "max_age_days", max_age_days)
 
         source_host = urlsplit(url).hostname
         if source_host is None or not _host_is_allowed(source_host, allowed_hosts):
@@ -312,7 +316,7 @@ def _load_sources(raw: dict[str, object]) -> tuple[SourceConfig, ...]:
         "allowed_hosts",
         "filter",
     }
-    supported = required | {"window_size"}
+    supported = required | {"window_size", "max_age_days"}
     for index, source_raw in enumerate(source_array, start=1):
         prefix = f"sources[{index}]"
         if not isinstance(source_raw, dict):
@@ -357,6 +361,11 @@ def _load_sources(raw: dict[str, object]) -> tuple[SourceConfig, ...]:
                     source_raw["allowed_hosts"], f"{prefix}.allowed_hosts"
                 ),
                 filter=_boolean(source_raw["filter"], f"{prefix}.filter"),
+                max_age_days=(
+                    _positive_int(source_raw["max_age_days"], f"{prefix}.max_age_days")
+                    if "max_age_days" in source_raw
+                    else None
+                ),
             )
         )
     result = tuple(sources)

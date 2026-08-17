@@ -5,7 +5,7 @@ import hashlib
 import inspect
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TextIO
 
@@ -16,7 +16,7 @@ from .collector import (
     collect_source,
 )
 from .config import AppConfig, FeishuDeliveryConfig, ModelConfig, SourceConfig
-from .datetime_utils import BEIJING_TIMEZONE, beijing_date
+from .datetime_utils import BEIJING_TIMEZONE, beijing_date, publication_date_bound
 from .filter import KeywordFilter
 from .model import ChineseSummary, NewsItem, canonicalize_url
 from .notifier import (
@@ -26,6 +26,7 @@ from .notifier import (
 )
 from .reader import JinaReader
 from .storage import (
+    AGE_FAILURE_ITEM_KEY,
     ARTICLE_RECOVERY_FAILURE_ITEM_KEY,
     BASELINE_FAILURE_ITEM_KEY,
     PRIORITY_RECOVERY_FAILURE_ITEM_KEY,
@@ -442,6 +443,49 @@ def run(
                     output=output,
                     stats=stats,
                 )
+        if source.max_age_days is not None:
+            fresh, stale = _partition_by_age(
+                selected, run_date=run_date, max_age_days=source.max_age_days
+            )
+            if stale:
+                stats.skipped += len(stale)
+                _report_failure(
+                    _FailureEvent(
+                        source.name,
+                        AGE_FAILURE_ITEM_KEY,
+                        _age_alert_title(stale, source.max_age_days),
+                        "age",
+                    ),
+                    mode=mode,
+                    notifier=notifier,
+                    storage=storage,
+                    config=config,
+                    run_date=run_date,
+                    output=output,
+                    stats=stats,
+                )
+                selected = fresh
+            elif mode == "send":
+                # A round with no stale articles is the recovery boundary for
+                # the aggregated age alert.
+                try:
+                    storage.clear_active_failure(source.name, AGE_FAILURE_ITEM_KEY)
+                except Exception:  # noqa: BLE001 - isolate recovery accounting
+                    _report_failure(
+                        _FailureEvent(
+                            source.name,
+                            AGE_FAILURE_ITEM_KEY,
+                            "（超龄恢复状态）",
+                            "state",
+                        ),
+                        mode=mode,
+                        notifier=notifier,
+                        storage=storage,
+                        config=config,
+                        run_date=run_date,
+                        output=output,
+                        stats=stats,
+                    )
         candidates.extend(
             _Candidate(len(candidates), source, item) for item in selected
         )
@@ -585,6 +629,41 @@ def _unique_source_items(items: Sequence[NewsItem], stats: _RunStats) -> list[Ne
         seen.add(item.dedupe_key)
         result.append(item)
     return result
+
+
+def _partition_by_age(
+    items: Sequence[NewsItem], *, run_date: str, max_age_days: int
+) -> tuple[list[NewsItem], list[NewsItem]]:
+    """Split candidates into fresh items and ones published too long ago.
+
+    Age uses the latest possible Beijing publication day for the item's
+    precision; month-only dates expire with their whole month and unparseable
+    dates stay fresh rather than dropping legitimate coverage.
+    """
+
+    cutoff = date.fromisoformat(run_date) - timedelta(days=max_age_days)
+    fresh: list[NewsItem] = []
+    stale: list[NewsItem] = []
+    for item in items:
+        bound = publication_date_bound(item.published_at)
+        if bound is not None and bound < cutoff:
+            stale.append(item)
+        else:
+            fresh.append(item)
+    return fresh, stale
+
+
+def _age_alert_title(stale: Sequence[NewsItem], max_age_days: int) -> str:
+    oldest = min(
+        (publication_date_bound(item.published_at) for item in stale),
+        key=lambda bound: bound or date.max,
+    )
+    oldest_label = oldest.isoformat() if oldest is not None else "日期未知"
+    sample = stale[0].title
+    return (
+        f"{len(stale)} 篇超过 {max_age_days} 天的文章已跳过"
+        f"（最老 {oldest_label}，如：{sample[:80]}）"
+    )
 
 
 def _print_baseline_preview(

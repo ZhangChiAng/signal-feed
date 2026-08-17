@@ -22,6 +22,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.sources[1].transport, "jina")
         self.assertFalse(config.sources[1].filter)
         self.assertEqual(config.sources[7].allowed_hosts[-1], "moonshotai.github.io")
+        self.assertEqual([source.max_age_days for source in config.sources], [30] * 14)
         self.assertEqual(config.filter.fields, ("title", "content"))
         self.assertIn("ChatGPT", config.filter.keywords)
         self.assertIn("智能体", config.filter.keywords)
@@ -63,6 +64,12 @@ class ConfigTests(unittest.TestCase):
                 'allowed_hosts = ["openai.com"]', 'allowed_hosts = ["example.com"]', 1
             ),
             "filter": repository.replace("filter = true", 'filter = "true"', 1),
+            "zero max age": repository.replace(
+                "max_age_days = 30", "max_age_days = 0", 1
+            ),
+            "non-integer max age": repository.replace(
+                "max_age_days = 30", 'max_age_days = "30"', 1
+            ),
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"

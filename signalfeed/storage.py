@@ -20,6 +20,7 @@ STATE_FAILURE_ITEM_KEY = "__state__"
 BASELINE_FAILURE_ITEM_KEY = "__baseline__"
 RECONCILE_FAILURE_ITEM_KEY = "__reconcile__"
 UNSEEN_FAILURE_ITEM_KEY = "__unseen__"
+AGE_FAILURE_ITEM_KEY = "__age__"
 ARTICLE_RECOVERY_FAILURE_ITEM_KEY = "__article_recovery__"
 PRIORITY_RECOVERY_FAILURE_ITEM_KEY = "__priority_recovery__"
 
@@ -129,9 +130,14 @@ class SQLiteStorage:
         try:
             delivered_keys, delivered_ids, delivered_urls = _delivered_state(connection)
             baseline_keys = _baseline_keys(connection)
+            # The baseline keeps the stable identities (feed GUID, CMS id, and
+            # first-seen URL) of a source's opening window.  Joining on them
+            # here keeps a relisted article unseen-blocked even when the site
+            # later changes its URL shape (for example a locale prefix).
+            baseline_ids, baseline_urls = _baseline_state(connection)
             seen_dedupe_keys = delivered_keys | baseline_keys
-            seen_item_ids = set(delivered_ids)
-            seen_urls = set(delivered_urls)
+            seen_item_ids = delivered_ids | baseline_ids
+            seen_urls = delivered_urls | baseline_urls
             result: list[NewsItem] = []
             for item in candidates:
                 dedupe_key = _item_dedupe_key(item)
@@ -158,13 +164,14 @@ class SQLiteStorage:
             return False
         try:
             delivered_keys, delivered_ids, delivered_urls = _delivered_state(connection)
+            baseline_ids, baseline_urls = _baseline_state(connection)
             dedupe_key = _item_dedupe_key(item)
             is_ordinary_article = dedupe_key == canonicalize_url(item.url)
             return dedupe_key in delivered_keys or (
                 is_ordinary_article
                 and (
-                    (item.source, item.item_id) in delivered_ids
-                    or (item.source, item.url) in delivered_urls
+                    (item.source, item.item_id) in delivered_ids | baseline_ids
+                    or (item.source, item.url) in delivered_urls | baseline_urls
                 )
             )
         finally:
@@ -567,6 +574,25 @@ def _baseline_keys(connection: sqlite3.Connection) -> set[str]:
     return {
         row[0] for row in connection.execute("SELECT dedupe_key FROM baseline_items")
     }
+
+
+def _baseline_state(
+    connection: sqlite3.Connection,
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """Return the (source, item_id) and (source, url) pairs of first baselines."""
+
+    if not _table_exists(connection, "baseline_items"):
+        return set(), set()
+    ids: set[tuple[str, str]] = set()
+    urls: set[tuple[str, str]] = set()
+    for source, item_id, url in connection.execute(
+        "SELECT source, item_id, url FROM baseline_items"
+    ):
+        if item_id:
+            ids.add((source, item_id))
+        if url:
+            urls.add((source, url))
+    return ids, urls
 
 
 def _deduplicate_batch(items: list[NewsItem]) -> list[NewsItem]:

@@ -197,6 +197,64 @@ class StorageTests(unittest.TestCase):
                 ).fetchone()[0]
             self.assertEqual(count, 2)
 
+    def test_baseline_secondary_identity_blocks_url_shape_changes(self) -> None:
+        """Replay the 2026-08-17 incident at the storage boundary.
+
+        A baseline captured ``/blog/<slug>`` URLs with stable CMS ids; the site
+        later relists identical articles under ``/en/blog/<slug>``.  Both the
+        item-id and the exact URL join must keep the relisted articles seen
+        even though their dedupe keys differ, while genuinely new articles
+        stay unseen.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "feed.sqlite3"
+            storage = SQLiteStorage(path)
+            baselined = [
+                news_item(
+                    source="Kimi Research",
+                    item_id="kimi-k2",
+                    guid="kimi-k2",
+                    url="https://www.kimi.com/blog/kimi-k2",
+                ),
+                news_item(
+                    source="Kimi Research",
+                    item_id="worldvqa",
+                    guid="worldvqa",
+                    url="https://www.kimi.com/blog/worldvqa",
+                ),
+            ]
+            self.assertTrue(
+                storage.initialize_source_baseline("Kimi Research", baselined)
+            )
+
+            relisted_same_id = news_item(
+                source="Kimi Research",
+                item_id="kimi-k2",
+                guid="kimi-k2",
+                url="https://www.kimi.com/en/blog/kimi-k2",
+            )
+            relisted_same_url = news_item(
+                source="Kimi Research",
+                item_id="unknown-id",
+                guid="unknown-id",
+                url="https://www.kimi.com/blog/worldvqa",
+            )
+            self.assertEqual(
+                storage.unseen([relisted_same_id, relisted_same_url], read_only=True),
+                [],
+            )
+
+            genuinely_new = news_item(
+                source="Kimi Research",
+                item_id="kimi-k3",
+                guid="kimi-k3",
+                url="https://www.kimi.com/en/blog/kimi-k3",
+            )
+            self.assertEqual(
+                storage.unseen([genuinely_new], read_only=True), [genuinely_new]
+            )
+
     def test_source_baseline_is_atomic_idempotent_and_globally_seen(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "feed.sqlite3"

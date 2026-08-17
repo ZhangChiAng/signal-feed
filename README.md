@@ -43,7 +43,9 @@ install -m 0600 .env.example .env
 
 `.env`、`models.toml` 和 `data/` 都不会被 Git 跟踪。应用错误不会回显模型 API Key、App Secret、接收者 ID 或带凭据的 URL。
 
-信源、检查窗口、网络限制、匹配字段、关键词和飞书消息大小位于 `config.toml`。每个 `[[sources]]` 都包含稳定唯一的 `name`、`url`、`collector`、`transport`、`content_mode`、`window_size`、`allowed_hosts` 和布尔 `filter`。`filter = true` 才应用全局 `[filter]`；匹配忽略大小写，并为英文关键词使用 ASCII 单词边界。支持的 Collector 固定为 `rss`、`markdown_index`、`markdown_changelog`、`markdown_cards` 和 `next_data_index`，列表解析不使用 LLM。
+信源、检查窗口、网络限制、匹配字段、关键词和飞书消息大小位于 `config.toml`。每个 `[[sources]]` 都包含稳定唯一的 `name`、`url`、`collector`、`transport`、`content_mode`、`window_size`、`allowed_hosts` 和布尔 `filter`，可选 `max_age_days` 为正整数。`filter = true` 才应用全局 `[filter]`；匹配忽略大小写，并为英文关键词使用 ASCII 单词边界。支持的 Collector 固定为 `rss`、`markdown_index`、`markdown_changelog`、`markdown_cards` 和 `next_data_index`，列表解析不使用 LLM。
+
+文章身份以跨来源规范化 URL 为主键，另以（来源、item id）与（来源、URL）作为送达记录和首次基线共同的次级身份：只要官方列表保留稳定条目 id，站点改版更换 URL 形态（例如新增语言路径前缀）也不会重推基线内文章。`max_age_days` 在去重与关键词过滤之后生效，发布时间超过该天数的新文章不再推送，只计入跳过并向同一飞书目标发送每源每轮一条聚合告警；整日精度按日期判断，仅月份精度时整月过期才拦截，无法解析的发布时间保守放行。
 
 信源名称同时是 SQLite 持久化身份，建立状态后不要随意改名。完整的 14 个入口与字段约束见[多信源技术规格](docs/multi-source-specification.md)。
 
@@ -93,7 +95,7 @@ uv run --locked python -m signalfeed --send
 
 | 时间 | 用途 |
 | --- | --- |
-| `09:00` | A 股与港股上午连续交易开始前半小时 |
+| `08:30` | 早间简报；在 DeepSeek 09:00 起的峰段定价开始前完成模型调用 |
 | `12:30` | A 股与港股下午连续交易开始前半小时 |
 | `21:00` | 晚间简报 |
 

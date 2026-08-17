@@ -1,6 +1,6 @@
 # SignalFeed 从零部署
 
-本文说明如何把 SignalFeed 安装为一次性 systemd 服务，并由 timer 在北京时间每天 `09:00`、`12:30`、`21:00` 运行。应用会按配置顺序处理 OpenAI、Anthropic、DeepSeek、Kimi、GLM 和 MiniMax 的多个官方信源。日常发布由 GitHub Actions 更新已经通过 CI 的 commit；systemd 单元只在首次安装或明确修改部署配置时由管理员重新安装。
+本文说明如何把 SignalFeed 安装为一次性 systemd 服务，并由 timer 在北京时间每天 `08:30`、`12:30`、`21:00` 运行（早间档在 DeepSeek 09:00 起的峰段定价开始前完成模型调用）。应用会按配置顺序处理 OpenAI、Anthropic、DeepSeek、Kimi、GLM 和 MiniMax 的多个官方信源。日常发布由 GitHub Actions 更新已经通过 CI 的 commit；systemd 单元只在首次安装或明确修改部署配置时由管理员重新安装。
 
 ## 1. 准备部署账户和目录
 
@@ -72,7 +72,7 @@ sudo systemctl daemon-reload
 确认三个日历表达式的下一次触发时间：
 
 ```bash
-systemd-analyze calendar --iterations=3 '*-*-* 09:00:00 Asia/Shanghai'
+systemd-analyze calendar --iterations=3 '*-*-* 08:30:00 Asia/Shanghai'
 systemd-analyze calendar --iterations=3 '*-*-* 12:30:00 Asia/Shanghai'
 systemd-analyze calendar --iterations=3 '*-*-* 21:00:00 Asia/Shanghai'
 ```

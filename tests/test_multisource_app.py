@@ -39,6 +39,7 @@ def source_config(
     *,
     content_mode: str = "article",
     apply_filter: bool = False,
+    max_age_days: int | None = None,
 ) -> SourceConfig:
     slug = name.lower().replace(" ", "-")
     return SourceConfig(
@@ -50,6 +51,7 @@ def source_config(
         window_size=20,
         allowed_hosts=("official.example",),
         filter=apply_filter,
+        max_age_days=max_age_days,
     )
 
 
@@ -70,6 +72,7 @@ def item(
     url: str | None = None,
     content: str = "Inline official release details.",
     dedupe_key: str = "",
+    published_at: str = "2026-08-10T12:00:00+08:00",
 ) -> NewsItem:
     target = url or f"https://official.example/articles/{slug}"
     return NewsItem(
@@ -78,7 +81,7 @@ def item(
         title=title or f"GPT release {slug}",
         content=content,
         url=target,
-        published_at="2026-08-10T12:00:00+08:00",
+        published_at=published_at,
         author=source.name,
         category="Release",
         guid=f"{source.name}:{slug}",
@@ -1186,6 +1189,162 @@ class MultiSourceAppTests(unittest.TestCase):
 
         alerts = [call for call in notifier_calls if not call.items]
         self.assertEqual(len(alerts), 2)
+
+    def test_url_shape_change_does_not_repush_baselined_articles(self) -> None:
+        """Replay of the 2026-08-17 incident: a site relists baseline articles
+        under new URL shapes (for example a locale prefix) while the list keeps
+        stable per-article ids.  The baseline secondary identities must keep
+        every relisted article unseen-blocked."""
+
+        source = source_config("Kimi Research")
+        original_urls = [
+            item(source, "kimi-k2", url="https://official.example/blog/kimi-k2"),
+            item(
+                source, "agent-swarm", url="https://official.example/blog/agent-swarm"
+            ),
+            item(source, "worldvqa", url="https://official.example/blog/worldvqa"),
+        ]
+        relisted_urls = [
+            item(source, "kimi-k2", url="https://official.example/en/blog/kimi-k2"),
+            item(
+                source,
+                "agent-swarm",
+                url="https://official.example/en/blog/agent-swarm",
+            ),
+            item(source, "worldvqa", url="https://official.example/en/blog/worldvqa"),
+        ]
+        genuinely_new = item(
+            source, "kimi-k3", url="https://official.example/en/blog/kimi-k3"
+        )
+        notifier_calls: list[Any] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            config = app_config(source)
+
+            _, baseline_output = self.run_app(
+                config, path, {source.name: CollectionBatch(tuple(original_urls))}
+            )
+            assert_summary_counts(
+                self,
+                baseline_output.getvalue(),
+                sent=0,
+                failed=0,
+                baseline=3,
+                skipped=0,
+            )
+
+            outcomes = {source.name: CollectionBatch((*relisted_urls, genuinely_new))}
+            result, output = self.run_app(
+                config,
+                path,
+                outcomes,
+                notifier_factory=notifier_factory_for(notifier_calls),
+            )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(notifier_calls), 1)
+            self.assertEqual(
+                tuple(delivered.url for delivered in notifier_calls[0].items),
+                (genuinely_new.url,),
+            )
+            assert_summary_counts(
+                self, output.getvalue(), sent=1, failed=0, baseline=0, skipped=3
+            )
+
+    def test_age_gate_blocks_stale_articles_and_alerts_once(self) -> None:
+        source = source_config("Kimi Research", max_age_days=30)
+        fresh = item(source, "fresh")
+        stale_full = item(
+            source, "stale-full", published_at="2026-01-05T09:00:00+08:00"
+        )
+        stale_date = item(source, "stale-date", published_at="2025-12-20")
+        stale_month = item(source, "stale-month", published_at="2026-01")
+        boundary_month = item(source, "boundary-month", published_at="2026-07")
+        unparseable = item(source, "unparseable", published_at="Jul 20")
+        batch = CollectionBatch(
+            (fresh, stale_full, stale_date, stale_month, boundary_month, unparseable)
+        )
+        notifier_calls: list[Any] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            config = app_config(source)
+            initialize_sources(path, config.sources)
+
+            result, output = self.run_app(
+                config,
+                path,
+                {source.name: batch},
+                notifier_factory=notifier_factory_for(notifier_calls),
+            )
+
+            # The clock is 2026-08-12 Beijing, so the 30-day cutoff is
+            # 2026-07-13: month precision stays fresh until the whole month
+            # expires, and unparseable dates are treated conservatively.
+            self.assertEqual(result, 1)
+            self.assertEqual(len(notifier_calls), 4)
+            alerts = [call for call in notifier_calls if not call.items]
+            self.assertEqual(len(alerts), 1)
+            alert_text = alerts[0].encoded.decode("utf-8")
+            self.assertIn("3 篇超过 30 天", alert_text)
+            assert_summary_counts(
+                self, output.getvalue(), sent=3, failed=1, baseline=0, skipped=3
+            )
+
+            # The stale articles reappear next round: still skipped, still one
+            # CLI failure, but no repeated alert while the event is active.
+            repeat_calls: list[Any] = []
+            result_again, output_again = self.run_app(
+                config,
+                path,
+                {source.name: CollectionBatch((stale_full, stale_date, stale_month))},
+                notifier_factory=notifier_factory_for(repeat_calls),
+            )
+            self.assertEqual(result_again, 1)
+            self.assertEqual(repeat_calls, [])
+            assert_summary_counts(
+                self, output_again.getvalue(), sent=0, failed=1, baseline=0, skipped=3
+            )
+
+            # A round without stale articles clears the active age event.
+            storage = SQLiteStorage(path)
+            self.assertTrue(
+                storage.has_active_failure(source.name, "__age__", read_only=True)
+            )
+            recovered, _ = self.run_app(
+                config,
+                path,
+                {source.name: CollectionBatch((fresh,))},
+                notifier_factory=notifier_factory_for([]),
+            )
+            self.assertEqual(recovered, 0)
+            self.assertFalse(
+                storage.has_active_failure(source.name, "__age__", read_only=True)
+            )
+
+    def test_age_gate_off_without_configuration(self) -> None:
+        source = source_config("Kimi Research")
+        ancient = item(source, "ancient", published_at="2025-01-20")
+        notifier_calls: list[Any] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            config = app_config(source)
+            initialize_sources(path, config.sources)
+
+            result, output = self.run_app(
+                config,
+                path,
+                {source.name: CollectionBatch((ancient,))},
+                notifier_factory=notifier_factory_for(notifier_calls),
+            )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(notifier_calls), 1)
+            assert_summary_counts(
+                self, output.getvalue(), sent=1, failed=0, baseline=0, skipped=0
+            )
 
 
 if __name__ == "__main__":
